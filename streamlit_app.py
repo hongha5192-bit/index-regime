@@ -32,15 +32,22 @@ def _run_lengths_by_label(df, mask):
 
 
 def _run_magnitudes_by_label(df, mask):
-    """Returns dict label → list of % returns from start→end of each run."""
+    """Returns dict label → list of % returns from lowest close in run → end-of-run close.
+
+    This is the apples-to-apples benchmark for the current in-progress run, which
+    we score as (today's close / lowest close during this run - 1).
+    """
     sub = df.loc[mask].reset_index(drop=True)
     segs = regime_segments(sub)
     out = {lab: [] for lab in REGIMES}
     for start, end, lab in segs:
-        s = sub.loc[sub['Date'] == start, 'Close'].iloc[0]
-        e = sub.loc[sub['Date'] == end,   'Close'].iloc[0]
-        if s and np.isfinite(s) and np.isfinite(e):
-            out[lab].append((e / s - 1.0) * 100.0)
+        run = sub[(sub['Date'] >= start) & (sub['Date'] <= end)]
+        if len(run) == 0:
+            continue
+        low = run['Close'].min()
+        e = run['Close'].iloc[-1]
+        if low and np.isfinite(low) and np.isfinite(e):
+            out[lab].append((e / low - 1.0) * 100.0)
     return out
 
 
@@ -58,17 +65,20 @@ def compute_summary_stats(df):
 
 
 def current_run_info(df):
-    """Returns (run_start_date, run_label, run_length_bars, run_pct_return)."""
+    """Returns (run_start_date, run_label, run_length_bars, pct_from_run_low,
+    run_low_date, run_low_close)."""
     segs = regime_segments(df)
     if not segs:
-        return None, None, 0, 0.0
+        return None, None, 0, 0.0, None, None
     start, end, lab = segs[-1]
-    sub = df[(df['Date'] >= start) & (df['Date'] <= end)]
+    sub = df[(df['Date'] >= start) & (df['Date'] <= end)].reset_index(drop=True)
     length = len(sub)
-    s = sub['Close'].iloc[0]
-    e = sub['Close'].iloc[-1]
-    pct = (e / s - 1.0) * 100.0 if s else 0.0
-    return start, lab, length, pct
+    low_idx = sub['Close'].idxmin()
+    low_date = sub.loc[low_idx, 'Date']
+    low_close = sub.loc[low_idx, 'Close']
+    last_close = sub['Close'].iloc[-1]
+    pct = (last_close / low_close - 1.0) * 100.0 if low_close else 0.0
+    return start, lab, length, pct, low_date, low_close
 
 
 def trough_3m(df, n_bars=63):
@@ -372,7 +382,7 @@ def summary_card(col, name, df, stats):
     pB_y, pN_y, pX_y = float(prev['p_Bull']), float(prev['p_Neutral']), float(prev['p_Bear'])
 
     # Q3 — duration
-    run_start, run_label, run_len, run_pct = current_run_info(df)
+    run_start, run_label, run_len, run_pct, run_low_date, run_low_close = current_run_info(df)
     train_runs = stats['train_runs'].get(run_label, [])
     test_runs  = stats['test_runs'].get(run_label, [])
     train_med  = int(np.median(train_runs)) if train_runs else 0
@@ -458,24 +468,26 @@ def summary_card(col, name, df, stats):
             unsafe_allow_html=True,
         )
 
-        # Q4 — Magnitude
+        # Q4 — Magnitude (low→close, apples-to-apples with historical completed runs)
         st.markdown(
             f"<div style='margin-top:10px; padding:12px 14px; background:#f7f8fa; border-radius:8px;'>"
-            f"<div style='font-size:11px; font-weight:700; color:#666; letter-spacing:1px;'>MAGNITUDE</div>"
+            f"<div style='font-size:11px; font-weight:700; color:#666; letter-spacing:1px;'>MAGNITUDE — LOW → CLOSE</div>"
             f"<div style='display:flex; justify-content:space-between; align-items:baseline; margin-top:4px;'>"
             f"<div>"
-            f"<div style='font-size:11px; color:#666;'>This run</div>"
+            f"<div style='font-size:11px; color:#666;'>From run low</div>"
             f"<div style='font-size:22px; font-weight:800; color:{'#27ae60' if run_pct>=0 else '#c0392b'};'>"
-            f"{'+' if run_pct>=0 else ''}{run_pct:.2f}%</div></div>"
+            f"{'+' if run_pct>=0 else ''}{run_pct:.2f}%</div>"
+            f"<div style='font-size:10px; color:#888;'>"
+            f"{run_low_close:,.1f} on {pd.Timestamp(run_low_date).date()}</div></div>"
             f"<div style='text-align:right;'>"
-            f"<div style='font-size:11px; color:#666;'>vs 3M low</div>"
+            f"<div style='font-size:11px; color:#666;'>Above 3M low</div>"
             f"<div style='font-size:16px; font-weight:700; color:#222;'>"
             f"{'+' if pct_above_low>=0 else ''}{pct_above_low:.2f}%</div>"
             f"<div style='font-size:10px; color:#888;'>"
             f"{low_val:,.1f} on {pd.Timestamp(low_date).date()}</div></div>"
             f"</div>"
             f"<div style='font-size:12px; color:#555; margin-top:8px;'>"
-            f"historical {run_label} median {mag_med:+.1f}% · P75 {mag_p75:+.1f}%"
+            f"historical {run_label} low→close median {mag_med:+.1f}% · P75 {mag_p75:+.1f}%"
             f"</div>"
             f"</div>",
             unsafe_allow_html=True,
