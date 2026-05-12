@@ -613,9 +613,8 @@ with tab_imp:
             x=['Bull', 'Neutral', 'Bear'],
             colorscale='Viridis',
             colorbar=dict(
-                title='mean |SHAP|',
+                title=dict(text='mean |SHAP|', font=dict(size=14, family='DM Sans')),
                 tickfont=dict(size=14, family='DM Sans'),
-                titlefont=dict(size=14, family='DM Sans'),
             ),
             hovertemplate='<b>%{y}</b><br>%{x}: %{z:.3f}<extra></extra>',
             text=[[f"{v:.2f}" for v in row] for row in z],
