@@ -771,20 +771,41 @@ with tab_dash:
             key=f"timeline_chart_single_{chart_index}",
         )
 
-    # Distribution
-    st.subheader("Regime distribution (full history)")
+    # Distribution — per (index, regime): share, mean/std of daily returns, run length
+    st.subheader("Regime distribution & statistics (full history)")
+    st.caption("Per (index, regime): bar count and share, mean & std of daily Close returns, "
+               "median & mean run length in bars.")
     dist_rows = []
     for name, df in [('VNINDEX', vnindex), ('VNMIDCAP', midcap), ('VNSMALLCAP', smallcap)]:
-        c = df['label'].value_counts().reindex(REGIMES, fill_value=0)
-        total = c.sum()
-        dist_rows.append({
-            'Index': name,
-            'Bars': int(total),
-            # Pre-scaled to percent — printf format '%%' is literal, not a multiplier.
-            'Bull':    c['Bull']    / total * 100.0,
-            'Neutral': c['Neutral'] / total * 100.0,
-            'Bear':    c['Bear']    / total * 100.0,
-        })
+        d = df.sort_values('Date').reset_index(drop=True).copy()
+        d['ret'] = d['Close'].pct_change()
+        total = len(d)
+        # run lengths grouped by label across the full series
+        segs = regime_segments(d)
+        runs_by_lab = {r: [] for r in REGIMES}
+        for s, e, lab in segs:
+            length = int(((d['Date'] >= s) & (d['Date'] <= e)).sum())
+            runs_by_lab[lab].append(length)
+        for regime in REGIMES:
+            sub = d[d['label'] == regime]
+            bars = len(sub)
+            share = bars / total * 100.0 if total else 0.0
+            r = sub['ret'].dropna()
+            mean_ret = float(r.mean()) * 100.0 if len(r) else 0.0
+            std_ret  = float(r.std())  * 100.0 if len(r) else 0.0
+            runs = runs_by_lab[regime]
+            med_run  = int(np.median(runs)) if runs else 0
+            mean_run = float(np.mean(runs)) if runs else 0.0
+            dist_rows.append({
+                'Index': name,
+                'Regime': regime,
+                'Bars': bars,
+                'Share': share,
+                'Mean daily ret': mean_ret,
+                'Std daily ret':  std_ret,
+                'Median run (bars)': med_run,
+                'Mean run (bars)':   round(mean_run, 1),
+            })
     ddf = pd.DataFrame(dist_rows)
     st.dataframe(
         ddf,
@@ -792,9 +813,12 @@ with tab_dash:
         use_container_width=True,
         key="dist_table",
         column_config={
-            'Bull':    st.column_config.ProgressColumn(format='%.1f%%', min_value=0.0, max_value=100.0),
-            'Neutral': st.column_config.ProgressColumn(format='%.1f%%', min_value=0.0, max_value=100.0),
-            'Bear':    st.column_config.ProgressColumn(format='%.1f%%', min_value=0.0, max_value=100.0),
+            'Bars':              st.column_config.NumberColumn(format='%d'),
+            'Share':             st.column_config.ProgressColumn(format='%.1f%%', min_value=0.0, max_value=100.0),
+            'Mean daily ret':    st.column_config.NumberColumn(format='%+.3f%%'),
+            'Std daily ret':     st.column_config.NumberColumn(format='%.3f%%'),
+            'Median run (bars)': st.column_config.NumberColumn(format='%d'),
+            'Mean run (bars)':   st.column_config.NumberColumn(format='%.1f'),
         },
     )
 
