@@ -20,27 +20,34 @@ from build_dashboard import (
 TRAIN_END = pd.Timestamp('2025-01-01')
 
 
-def _run_lengths_by_label(df, mask):
-    """Returns dict label → list of run lengths (in bars) within rows selected by mask."""
-    sub = df.loc[mask].reset_index(drop=True)
-    segs = regime_segments(sub)
-    out = {lab: [] for lab in REGIMES}
-    for start, end, lab in segs:
-        length = int(((sub['Date'] >= start) & (sub['Date'] <= end)).sum())
-        out[lab].append(length)
-    return out
+def _run_lengths_by_label(df, mask, global_last_date=None):
+    """Returns dict label → list of run lengths (in bars) within rows selected by mask.
 
-
-def _run_magnitudes_by_label(df, mask):
-    """Returns dict label → list of % returns from lowest close in run → end-of-run close.
-
-    This is the apples-to-apples benchmark for the current in-progress run, which
-    we score as (today's close / lowest close during this run - 1).
+    Excludes the in-progress run (segment whose end equals global_last_date).
     """
     sub = df.loc[mask].reset_index(drop=True)
     segs = regime_segments(sub)
     out = {lab: [] for lab in REGIMES}
     for start, end, lab in segs:
+        if global_last_date is not None and end == global_last_date:
+            continue
+        length = int(((sub['Date'] >= start) & (sub['Date'] <= end)).sum())
+        out[lab].append(length)
+    return out
+
+
+def _run_magnitudes_by_label(df, mask, global_last_date=None):
+    """Returns dict label → list of % returns from lowest close in run → end-of-run close.
+
+    Excludes the in-progress run: any segment whose end date equals the global
+    last date is dropped, since its low→close return is not yet final.
+    """
+    sub = df.loc[mask].reset_index(drop=True)
+    segs = regime_segments(sub)
+    out = {lab: [] for lab in REGIMES}
+    for start, end, lab in segs:
+        if global_last_date is not None and end == global_last_date:
+            continue
         run = sub[(sub['Date'] >= start) & (sub['Date'] <= end)]
         if len(run) == 0:
             continue
@@ -52,15 +59,21 @@ def _run_magnitudes_by_label(df, mask):
 
 
 def compute_summary_stats(df):
-    """Compute run-length & magnitude distributions per regime, in train vs test."""
+    """Compute run-length & magnitude distributions per regime, in train vs test.
+
+    The in-progress run (last segment ending on the global last date) is
+    excluded from the historical pool so the displayed median/P75 reflects
+    only completed runs.
+    """
     df = df.sort_values('Date').reset_index(drop=True)
     train_mask = df['Date'] < TRAIN_END
     test_mask  = df['Date'] >= TRAIN_END
+    last_date = df['Date'].iloc[-1]
     return {
-        'train_runs': _run_lengths_by_label(df, train_mask),
-        'test_runs':  _run_lengths_by_label(df, test_mask),
-        'train_mags': _run_magnitudes_by_label(df, train_mask),
-        'test_mags':  _run_magnitudes_by_label(df, test_mask),
+        'train_runs': _run_lengths_by_label(df, train_mask, global_last_date=last_date),
+        'test_runs':  _run_lengths_by_label(df, test_mask,  global_last_date=last_date),
+        'train_mags': _run_magnitudes_by_label(df, train_mask, global_last_date=last_date),
+        'test_mags':  _run_magnitudes_by_label(df, test_mask,  global_last_date=last_date),
     }
 
 
