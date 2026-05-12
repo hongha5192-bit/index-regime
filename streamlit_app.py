@@ -548,27 +548,41 @@ def summary_card(col, name, df, stats):
             unsafe_allow_html=True,
         )
 
-        # Q4 — Magnitude (low→close, apples-to-oranges with historical completed runs)
+        # Q4 — Magnitude. ONE primary metric (run progress, low→close), with verdict
+        # pill vs historical completed runs. 3M low demoted to a footnote.
+        if run_pct >= mag_p75:
+            verdict_txt, verdict_bg, verdict_fg = "Above P75", "#27ae60", "#fff"
+        elif run_pct >= mag_med:
+            verdict_txt, verdict_bg, verdict_fg = "Above median", "#a3d977", "#1e7e34"
+        elif run_pct >= 0:
+            verdict_txt, verdict_bg, verdict_fg = "Below median", "#f4d35e", "#7a5c00"
+        else:
+            verdict_txt, verdict_bg, verdict_fg = "Negative", "#e74c3c", "#fff"
+
         st.markdown(
-            f"<div style='margin-top:10px; padding:12px 14px; background:#f7f8fa; border-radius:8px;'>"
-            f"<div style='font-size:11px; font-weight:700; color:#666; letter-spacing:1px;'>MAGNITUDE — LOW → CLOSE</div>"
-            f"<div style='display:flex; justify-content:space-between; align-items:baseline; margin-top:4px;'>"
-            f"<div>"
-            f"<div style='font-size:11px; color:#666;'>From run low</div>"
-            f"<div style='font-size:22px; font-weight:800; color:{'#27ae60' if run_pct>=0 else '#c0392b'};'>"
-            f"{'+' if run_pct>=0 else ''}{run_pct:.2f}%</div>"
-            f"<div style='font-size:10px; color:#888;'>"
-            f"{run_low_close:,.1f} on {pd.Timestamp(run_low_date).date()}</div></div>"
-            f"<div style='text-align:right;'>"
-            f"<div style='font-size:11px; color:#666;'>Above 3M low</div>"
-            f"<div style='font-size:16px; font-weight:700; color:#222;'>"
-            f"{'+' if pct_above_low>=0 else ''}{pct_above_low:.2f}%</div>"
-            f"<div style='font-size:10px; color:#888;'>"
-            f"{low_val:,.1f} on {pd.Timestamp(low_date).date()}</div></div>"
-            f"</div>"
-            f"<div style='font-size:12px; color:#555; margin-top:8px;'>"
-            f"historical {run_label} low→close median {mag_med:+.1f}% · P75 {mag_p75:+.1f}%"
-            f"</div>"
+            f"<div style='margin-top:10px; padding:14px 16px; background:#f7f8fa; border-radius:8px;'>"
+            # Header
+            f"<div style='font-size:11px; font-weight:700; color:#666; letter-spacing:1px;'>"
+            f"RUN PROGRESS (low → close)</div>"
+            # Big number + verdict pill on the same line
+            f"<div style='display:flex; align-items:baseline; gap:12px; margin-top:6px;'>"
+            f"<span style='font-size:30px; font-weight:800; color:{'#27ae60' if run_pct>=0 else '#c0392b'};'>"
+            f"{'+' if run_pct>=0 else ''}{run_pct:.2f}%</span>"
+            f"<span style='padding:3px 10px; background:{verdict_bg}; color:{verdict_fg}; "
+            f"font-size:11px; font-weight:700; border-radius:12px; letter-spacing:0.5px;'>"
+            f"{verdict_txt}</span></div>"
+            # Sub-line explaining what it means
+            f"<div style='font-size:11px; color:#888; margin-top:4px;'>"
+            f"from run low {run_low_close:,.1f} on {pd.Timestamp(run_low_date).date()}</div>"
+            # Hist benchmark — explicitly labelled
+            f"<div style='font-size:12px; color:#444; margin-top:10px; "
+            f"padding-top:8px; border-top:1px solid #e8eaee;'>"
+            f"Hist {run_label} runs (low→close): median <b>{mag_med:+.2f}%</b> · "
+            f"P75 <b>{mag_p75:+.2f}%</b></div>"
+            # Footnote — market-wide 3M floor (clearly separate, italicized)
+            f"<div style='font-size:11px; color:#999; margin-top:6px; font-style:italic;'>"
+            f"Market context: index is {pct_above_low:+.2f}% above its 3-month low "
+            f"({low_val:,.1f} on {pd.Timestamp(low_date).date()})</div>"
             f"</div>",
             unsafe_allow_html=True,
         )
