@@ -14,8 +14,74 @@ import streamlit as st
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from build_dashboard import (
     ROOT, OHLC_CSV, REGIMES, COLORS, GROUP_COLOR, FEATURE_CATALOG, V4_FEATS,
-    load_regime_series, compute_long_metrics, make_chart,
+    load_regime_series, compute_long_metrics, make_chart, regime_segments,
 )
+
+TRAIN_END = pd.Timestamp('2025-01-01')
+
+
+def _run_lengths_by_label(df, mask):
+    """Returns dict label → list of run lengths (in bars) within rows selected by mask."""
+    sub = df.loc[mask].reset_index(drop=True)
+    segs = regime_segments(sub)
+    out = {lab: [] for lab in REGIMES}
+    for start, end, lab in segs:
+        length = int(((sub['Date'] >= start) & (sub['Date'] <= end)).sum())
+        out[lab].append(length)
+    return out
+
+
+def _run_magnitudes_by_label(df, mask):
+    """Returns dict label → list of % returns from start→end of each run."""
+    sub = df.loc[mask].reset_index(drop=True)
+    segs = regime_segments(sub)
+    out = {lab: [] for lab in REGIMES}
+    for start, end, lab in segs:
+        s = sub.loc[sub['Date'] == start, 'Close'].iloc[0]
+        e = sub.loc[sub['Date'] == end,   'Close'].iloc[0]
+        if s and np.isfinite(s) and np.isfinite(e):
+            out[lab].append((e / s - 1.0) * 100.0)
+    return out
+
+
+def compute_summary_stats(df):
+    """Compute run-length & magnitude distributions per regime, in train vs test."""
+    df = df.sort_values('Date').reset_index(drop=True)
+    train_mask = df['Date'] < TRAIN_END
+    test_mask  = df['Date'] >= TRAIN_END
+    return {
+        'train_runs': _run_lengths_by_label(df, train_mask),
+        'test_runs':  _run_lengths_by_label(df, test_mask),
+        'train_mags': _run_magnitudes_by_label(df, train_mask),
+        'test_mags':  _run_magnitudes_by_label(df, test_mask),
+    }
+
+
+def current_run_info(df):
+    """Returns (run_start_date, run_label, run_length_bars, run_pct_return)."""
+    segs = regime_segments(df)
+    if not segs:
+        return None, None, 0, 0.0
+    start, end, lab = segs[-1]
+    sub = df[(df['Date'] >= start) & (df['Date'] <= end)]
+    length = len(sub)
+    s = sub['Close'].iloc[0]
+    e = sub['Close'].iloc[-1]
+    pct = (e / s - 1.0) * 100.0 if s else 0.0
+    return start, lab, length, pct
+
+
+def trough_3m(df, n_bars=63):
+    """Lowest Close in last n_bars bars and its date; plus % above trough."""
+    sub = df.tail(n_bars)
+    if len(sub) == 0:
+        return None, None, 0.0
+    idx = sub['Close'].idxmin()
+    low = sub.loc[idx, 'Close']
+    low_date = sub.loc[idx, 'Date']
+    last = df['Close'].iloc[-1]
+    pct_above = (last / low - 1.0) * 100.0 if low else 0.0
+    return low_date, low, pct_above
 
 st.set_page_config(page_title="CJM Regime Dashboard", layout="wide",
                    initial_sidebar_state="expanded",
@@ -260,11 +326,176 @@ with st.sidebar:
 st.title("CJM Regime Classification — Vietnam Equity Indices")
 st.caption("Continuous Statistical Jump Model (K=3, λ=50). Train 2016-07 → 2024-12. Out-of-sample 2025-01 onward.")
 
-tab_dash, tab_feat, tab_imp = st.tabs([
+tab_summary, tab_dash, tab_feat, tab_imp = st.tabs([
+    "Summary",
     "Dashboard",
     f"Features ({len(FEATURE_CATALOG)})",
     "Importance",
 ])
+
+# ─────────────────────────────── Tab 0: Summary ─────────────────────────────
+
+def _delta_chip(label, today, prev, color):
+    """Render a small chip showing today's prob + delta vs prev day."""
+    delta = today - prev
+    if abs(delta) < 0.005:
+        arrow = "→"; dcolor = "#888"
+    elif delta > 0:
+        arrow = "▲"; dcolor = "#e67e22" if label != 'Bull' else "#27ae60"
+    else:
+        arrow = "▼"; dcolor = "#888"
+    # Highlight any non-dominant non-zero prob (even small) with bold
+    bg_intensity = max(0.06, min(today, 1.0) * 0.40)
+    bg = f"rgba({int(color[1:3],16)},{int(color[3:5],16)},{int(color[5:7],16)},{bg_intensity:.2f})"
+    weight = '700' if today >= 0.05 else '500'
+    return (
+        f"<div style='display:inline-block; padding:6px 12px; margin-right:6px; "
+        f"border-radius:8px; background:{bg}; border:1px solid {color}55; min-width:100px;'>"
+        f"<div style='font-size:10px; font-weight:600; color:{color}; letter-spacing:0.5px;'>{label.upper()}</div>"
+        f"<div style='font-size:18px; font-weight:{weight}; color:#222; font-variant-numeric:tabular-nums;'>"
+        f"{today*100:.0f}%"
+        f"<span style='font-size:11px; color:{dcolor}; margin-left:6px; font-weight:600;'>"
+        f"{arrow} {delta*100:+.0f}pp</span></div></div>"
+    )
+
+
+def summary_card(col, name, df, stats):
+    last = df.iloc[-1]
+    prev = df.iloc[-2] if len(df) > 1 else last
+    label = last['label']
+    color = COLORS[label]
+    chg = float(last['Close'] - prev['Close'])
+    chg_pct = (chg / prev['Close']) * 100 if prev['Close'] else 0.0
+    sign = "+" if chg >= 0 else ""
+
+    pB_t, pN_t, pX_t = float(last['p_Bull']), float(last['p_Neutral']), float(last['p_Bear'])
+    pB_y, pN_y, pX_y = float(prev['p_Bull']), float(prev['p_Neutral']), float(prev['p_Bear'])
+
+    # Q3 — duration
+    run_start, run_label, run_len, run_pct = current_run_info(df)
+    train_runs = stats['train_runs'].get(run_label, [])
+    test_runs  = stats['test_runs'].get(run_label, [])
+    train_med  = int(np.median(train_runs)) if train_runs else 0
+    train_p75  = int(np.percentile(train_runs, 75)) if train_runs else 0
+    test_med   = int(np.median(test_runs)) if test_runs else 0
+    pct_rank = (np.sum(np.array(train_runs + test_runs) <= run_len) / max(1, len(train_runs)+len(test_runs))) * 100
+
+    # Q4 — magnitude
+    low_date, low_val, pct_above_low = trough_3m(df)
+    train_mags = stats['train_mags'].get(run_label, [])
+    test_mags  = stats['test_mags'].get(run_label, [])
+    all_mags   = train_mags + test_mags
+    mag_med    = float(np.median(all_mags)) if all_mags else 0.0
+    mag_p75    = float(np.percentile(all_mags, 75)) if all_mags else 0.0
+
+    # Shift detection — any non-dominant prob ≥ 5% is a yellow flag
+    shifts = []
+    for lab, p, p_prev in [('Bull', pB_t, pB_y), ('Neutral', pN_t, pN_y), ('Bear', pX_t, pX_y)]:
+        if lab == label:
+            continue
+        if p >= 0.05 or (p - p_prev) >= 0.05:
+            shifts.append(f"P({lab}) = {p*100:.0f}% (was {p_prev*100:.0f}%)")
+    if shifts:
+        shift_html = (
+            f"<div style='margin-top:10px; padding:10px 14px; background:#fff8e1; "
+            f"border-left:4px solid #f39c12; border-radius:6px;'>"
+            f"<div style='font-size:11px; font-weight:700; color:#b9770e; letter-spacing:0.5px;'>"
+            f"⚠ REGIME SHIFT SIGNAL</div>"
+            f"<div style='font-size:13px; color:#222; margin-top:3px;'>" + " · ".join(shifts) + "</div></div>"
+        )
+    else:
+        shift_html = (
+            f"<div style='margin-top:10px; padding:10px 14px; background:#eafaf1; "
+            f"border-left:4px solid #2ecc71; border-radius:6px;'>"
+            f"<div style='font-size:11px; font-weight:700; color:#1e8449; letter-spacing:0.5px;'>"
+            f"✓ STABLE — no rival regime probability above 5%</div></div>"
+        )
+
+    with col:
+        # Q1 — Latest regime
+        st.markdown(
+            f"<div style='padding:16px 18px; background:{color}14; border-left:5px solid {color}; "
+            f"border-radius:10px; margin-bottom:14px;'>"
+            f"<div style='font-size:13px; font-weight:600; color:#666; letter-spacing:1px;'>{name}</div>"
+            f"<div style='display:flex; align-items:baseline; gap:14px; margin-top:6px;'>"
+            f"<span style='font-size:30px; font-weight:800; color:{color}; letter-spacing:0.5px;'>{label.upper()}</span>"
+            f"<span style='font-size:18px; font-weight:700; color:#222;'>{last['Close']:,.1f}</span>"
+            f"<span style='font-size:14px; font-weight:600; "
+            f"color:{'#27ae60' if chg>=0 else '#c0392b'};'>{sign}{chg:.1f} ({sign}{chg_pct:.2f}%)</span>"
+            f"</div>"
+            f"<div style='font-size:11px; color:#888; margin-top:4px;'>as of {last['Date'].date()}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        # Q2 — Probability vector with day-over-day delta
+        st.markdown("<div style='font-size:12px; font-weight:700; color:#666; "
+                    "letter-spacing:1px; margin:6px 0 8px 0;'>REGIME PROBABILITIES (vs yesterday)</div>",
+                    unsafe_allow_html=True)
+        st.markdown(
+            "<div>" +
+            _delta_chip('Bull',    pB_t, pB_y, COLORS['Bull']) +
+            _delta_chip('Neutral', pN_t, pN_y, COLORS['Neutral']) +
+            _delta_chip('Bear',    pX_t, pX_y, COLORS['Bear']) +
+            "</div>" + shift_html,
+            unsafe_allow_html=True,
+        )
+
+        # Q3 — Duration
+        st.markdown(
+            f"<div style='margin-top:14px; padding:12px 14px; background:#f7f8fa; border-radius:8px;'>"
+            f"<div style='font-size:11px; font-weight:700; color:#666; letter-spacing:1px;'>DURATION IN {run_label.upper() if run_label else 'REGIME'}</div>"
+            f"<div style='font-size:26px; font-weight:800; color:#222; margin-top:4px; font-variant-numeric:tabular-nums;'>"
+            f"{run_len} <span style='font-size:14px; font-weight:500; color:#888;'>bars</span></div>"
+            f"<div style='font-size:12px; color:#555; margin-top:4px;'>"
+            f"since <b>{pd.Timestamp(run_start).date()}</b> · "
+            f"train median {train_med} · train P75 {train_p75} · test median {test_med}"
+            f"</div>"
+            f"<div style='font-size:11px; color:{'#e67e22' if pct_rank>=75 else '#888'}; margin-top:3px; font-weight:600;'>"
+            f"≤ this length in {pct_rank:.0f}% of historical {run_label} runs"
+            f"</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        # Q4 — Magnitude
+        st.markdown(
+            f"<div style='margin-top:10px; padding:12px 14px; background:#f7f8fa; border-radius:8px;'>"
+            f"<div style='font-size:11px; font-weight:700; color:#666; letter-spacing:1px;'>MAGNITUDE</div>"
+            f"<div style='display:flex; justify-content:space-between; align-items:baseline; margin-top:4px;'>"
+            f"<div>"
+            f"<div style='font-size:11px; color:#666;'>This run</div>"
+            f"<div style='font-size:22px; font-weight:800; color:{'#27ae60' if run_pct>=0 else '#c0392b'};'>"
+            f"{'+' if run_pct>=0 else ''}{run_pct:.2f}%</div></div>"
+            f"<div style='text-align:right;'>"
+            f"<div style='font-size:11px; color:#666;'>vs 3M low</div>"
+            f"<div style='font-size:16px; font-weight:700; color:#222;'>"
+            f"{'+' if pct_above_low>=0 else ''}{pct_above_low:.2f}%</div>"
+            f"<div style='font-size:10px; color:#888;'>"
+            f"{low_val:,.1f} on {pd.Timestamp(low_date).date()}</div></div>"
+            f"</div>"
+            f"<div style='font-size:12px; color:#555; margin-top:8px;'>"
+            f"historical {run_label} median {mag_med:+.1f}% · P75 {mag_p75:+.1f}%"
+            f"</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+
+with tab_summary:
+    st.subheader("At-a-glance regime read")
+    st.caption(
+        "**Q1** Latest regime · **Q2** Day-over-day probability shifts (any rival ≥5% flags a yellow warning) · "
+        "**Q3** Duration vs train/test medians · **Q4** Current run magnitude + vs 3M low + historical comparison"
+    )
+    stats_by_name = {
+        'VNINDEX':    compute_summary_stats(vnindex),
+        'VNMIDCAP':   compute_summary_stats(midcap),
+        'VNSMALLCAP': compute_summary_stats(smallcap),
+    }
+    cols_s = st.columns(3)
+    for col, (n, df) in zip(cols_s, [('VNINDEX', vnindex), ('VNMIDCAP', midcap), ('VNSMALLCAP', smallcap)]):
+        summary_card(col, n, df, stats_by_name[n])
 
 # ─────────────────────────────── Tab 1: Dashboard ───────────────────────────
 
