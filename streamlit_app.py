@@ -323,8 +323,26 @@ hr { margin: 16px 0 !important; }
 """, unsafe_allow_html=True)
 
 # ── Cached data ─────────────────────────────────────────────────────────────
+# Cache key derived from data-file mtimes so any deploy with refreshed CSVs
+# busts the cache automatically (otherwise stale data can survive a restart).
+def _data_mtime_key():
+    paths = [
+        os.path.join(ROOT, 'phase4_cjm_v7_vnindex_results.npz'),
+        os.path.join(ROOT, 'phase4_cjm_v7_midcap_results.npz'),
+        os.path.join(ROOT, 'phase4_cjm_v7_smallcap_results.npz'),
+        os.path.join(ROOT, 'phase4_regime_v7_vnindex.csv'),
+        os.path.join(ROOT, 'phase4_regime_v7_midcap.csv'),
+        os.path.join(ROOT, 'phase4_regime_v7_smallcap.csv'),
+        os.path.join(ROOT, 'VNINDEX_OHLCV_with_features_v4.csv'),
+        os.path.join(ROOT, 'VNMIDCAP_OHLCV_with_features_v4_shared.csv'),
+        os.path.join(ROOT, 'VNSMALLCAP_OHLCV_with_features_v4_shared.csv'),
+        os.path.join(ROOT, 'feature_importance_extended_v7.csv'),
+    ]
+    return tuple(int(os.path.getmtime(p)) for p in paths if os.path.exists(p))
+
+
 @st.cache_data
-def load_all():
+def load_all(_mtime_key):
     cases = [('vnindex','VNINDEX'),('midcap','VNMIDCAP'),('smallcap','VNSMALLCAP')]
     out = {}
     for tag, name in cases:
@@ -337,7 +355,7 @@ def load_all():
     return out
 
 @st.cache_data
-def load_feature_csvs():
+def load_feature_csvs(_mtime_key):
     return {
         'VNINDEX':    pd.read_csv(os.path.join(ROOT, 'VNINDEX_OHLCV_with_features_v4.csv'),    parse_dates=['Date']),
         'VNMIDCAP':   pd.read_csv(os.path.join(ROOT, 'VNMIDCAP_OHLCV_with_features_v4_shared.csv'), parse_dates=['Date']),
@@ -345,14 +363,15 @@ def load_feature_csvs():
     }
 
 @st.cache_data
-def load_importance():
+def load_importance(_mtime_key):
     ext = os.path.join(ROOT, 'feature_importance_extended_v7.csv')
     return pd.read_csv(ext) if os.path.exists(ext) else None
 
-indices = load_all()
+_mtime = _data_mtime_key()
+indices = load_all(_mtime)
 vnindex, midcap, smallcap = indices['VNINDEX'], indices['VNMIDCAP'], indices['VNSMALLCAP']
-feat_csvs = load_feature_csvs()
-imp = load_importance()
+feat_csvs = load_feature_csvs(_mtime)
+imp = load_importance(_mtime)
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -368,14 +387,23 @@ with st.sidebar:
                f"**{max(df['Date'].max() for df in indices.values()).date()}**")
 
 # ── Header ───────────────────────────────────────────────────────────────────
+_latest_data = max(df['Date'].max() for df in indices.values()).date()
 st.title("CJM Regime Classification — Vietnam Equity Indices")
-st.caption("Continuous Statistical Jump Model (K=3, λ=50). Train 2016-07 → 2024-12. Out-of-sample 2025-01 onward.")
+st.markdown(
+    f"<div style='display:flex; align-items:center; gap:12px; margin-top:-6px; margin-bottom:8px;'>"
+    f"<span style='color:#666; font-size:13px;'>Continuous Statistical Jump Model (K=3, λ=50). "
+    f"Train 2016-07 → 2024-12. Out-of-sample 2025-01 onward.</span>"
+    f"<span style='display:inline-block; padding:3px 10px; background:#27ae60; color:#fff; "
+    f"font-size:11px; font-weight:700; border-radius:12px; letter-spacing:0.5px;'>"
+    f"DATA THROUGH {_latest_data}</span></div>",
+    unsafe_allow_html=True,
+)
 
 tab_summary, tab_dash, tab_feat, tab_imp = st.tabs([
     "Summary",
     "Dashboard",
     f"Features ({len(FEATURE_CATALOG)})",
-    "Importance",
+    "Feature Importance",
 ])
 
 # ─────────────────────────────── Tab 0: Summary ─────────────────────────────
@@ -1006,30 +1034,33 @@ with tab_imp:
                     for f in top_df['feature']
                 ]
                 vmax = float(top_df[m].max())
+                # Choose decimals: small values (RF Gini ≤ 0.2) need 3, others 2 reads clean
+                decimals = 3 if vmax < 0.5 else 2
                 fig = go.Figure(go.Bar(
                     x=top_df[m],
                     y=top_df['feature'],
                     orientation='h',
                     marker=dict(color=bar_colors, line=dict(width=0)),
-                    text=[f"{v:.3f}" for v in top_df[m]],
+                    text=[f"{v:.{decimals}f}" for v in top_df[m]],
                     textposition='outside',
-                    textfont=dict(size=14, family='DM Mono', color='#222'),
+                    textfont=dict(size=15, family='DM Mono', color='#222'),
                     cliponaxis=False,
+                    constraintext='none',
                     hovertemplate='<b>%{y}</b><br>' + label + ' = %{x:.4f}<extra></extra>',
                 ))
                 fig.update_layout(
                     title=dict(
                         text=f"<b style='color:{mcol}'>{label}</b>",
                         x=0.5,
-                        font=dict(size=20, family='DM Sans'),
+                        font=dict(size=22, family='DM Sans'),
                     ),
-                    height=420,
-                    margin=dict(l=10, r=90, t=58, b=24),
+                    height=460,
+                    margin=dict(l=10, r=110, t=64, b=28),
                     plot_bgcolor='#fafbfc',
                     xaxis=dict(
                         showgrid=True, gridcolor='#eee',
                         tickfont=dict(size=12, family='DM Sans'),
-                        range=[0, vmax * 1.22],  # 22% headroom so outside text labels fit
+                        range=[0, vmax * 1.30],  # 30% headroom so outside text labels fit
                     ),
                     yaxis=dict(tickfont=dict(size=14, family='DM Sans')),
                     font=dict(family='DM Sans'),
