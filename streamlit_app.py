@@ -94,6 +94,28 @@ def current_run_info(df):
     return start, lab, length, pct, low_date, low_close
 
 
+@st.cache_data(hash_funcs={pd.DataFrame: lambda df: (len(df), df['Date'].iloc[-1])})
+def forward_stats_cached(df):
+    """Return compute_long_metrics filtered to (3,5) for both splits. Cached per-df by length+last-date."""
+    return compute_long_metrics(df, periods=(3, 5))
+
+
+def forward_stats_for_regime(df, regime_label):
+    """Returns dict {(split, period): {n, win_rate, median_ret, p75_up, p25_dn}}."""
+    agg = forward_stats_cached(df)
+    sub = agg[agg['regime'] == regime_label]
+    out = {}
+    for _, r in sub.iterrows():
+        out[(r['split'], r['period'])] = {
+            'n': int(r['n']),
+            'win': float(r['win_rate']),
+            'med': float(r['median_ret']),
+            'up':  float(r['p75_up']),
+            'dn':  float(r['p25_dn']),
+        }
+    return out
+
+
 def trough_3m(df, n_bars=63):
     """Lowest Close in last n_bars bars and its date; plus % above trough."""
     sub = df.tail(n_bars)
@@ -481,7 +503,52 @@ def summary_card(col, name, df, stats):
             unsafe_allow_html=True,
         )
 
-        # Q4 — Magnitude (low→close, apples-to-apples with historical completed runs)
+        # Q5 — Forward stats conditional on current regime (T+3, T+5)
+        fwd = forward_stats_for_regime(df, label)
+        def cell(split, period):
+            v = fwd.get((split, period))
+            if v is None:
+                return "<td colspan='4' style='color:#aaa;'>no data</td>"
+            ret_color = '#1e7e34' if v['med'] >= 0 else '#c0392b'
+            return (
+                f"<td style='text-align:center; font-weight:700;'>{v['win']*100:.0f}%</td>"
+                f"<td style='text-align:center; font-weight:700; color:{ret_color};'>"
+                f"{v['med']*100:+.2f}%</td>"
+                f"<td style='text-align:center; color:#1e7e34;'>+{v['up']*100:.1f}%</td>"
+                f"<td style='text-align:center; color:#c0392b;'>{v['dn']*100:.1f}%</td>"
+            )
+        n_train = fwd.get(('Train (≤2024)','T+3'), {}).get('n', 0)
+        n_test  = fwd.get(('Test (2025+)','T+3'), {}).get('n', 0)
+        st.markdown(
+            f"<div style='margin-top:10px; padding:12px 14px; background:#fafbfc; "
+            f"border:1px solid #e8eaee; border-radius:8px;'>"
+            f"<div style='font-size:11px; font-weight:700; color:#666; letter-spacing:1px;'>"
+            f"FORWARD STATS · GIVEN {label.upper()}</div>"
+            f"<table style='width:100%; border-collapse:collapse; margin-top:6px; "
+            f"font-size:11px; font-variant-numeric:tabular-nums;'>"
+            f"<thead><tr style='color:#888; font-weight:600;'>"
+            f"<th style='text-align:left; padding:2px 4px;'></th>"
+            f"<th style='text-align:center; padding:2px 4px;'>Win</th>"
+            f"<th style='text-align:center; padding:2px 4px;'>Median</th>"
+            f"<th style='text-align:center; padding:2px 4px;'>P75 up</th>"
+            f"<th style='text-align:center; padding:2px 4px;'>P25 dn</th></tr></thead>"
+            f"<tbody>"
+            f"<tr><td style='color:#444; font-weight:600; padding:3px 4px;'>Train T+3</td>"
+            + cell('Train (≤2024)','T+3') + "</tr>"
+            f"<tr><td style='color:#444; font-weight:600; padding:3px 4px;'>Train T+5</td>"
+            + cell('Train (≤2024)','T+5') + "</tr>"
+            f"<tr><td style='color:#444; font-weight:600; padding:3px 4px;'>Test T+3</td>"
+            + cell('Test (2025+)','T+3') + "</tr>"
+            f"<tr><td style='color:#444; font-weight:600; padding:3px 4px;'>Test T+5</td>"
+            + cell('Test (2025+)','T+5') + "</tr>"
+            f"</tbody></table>"
+            f"<div style='font-size:10px; color:#999; margin-top:4px;'>"
+            f"n_train={n_train} · n_test={n_test} bars classified as {label}</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        # Q4 — Magnitude (low→close, apples-to-oranges with historical completed runs)
         st.markdown(
             f"<div style='margin-top:10px; padding:12px 14px; background:#f7f8fa; border-radius:8px;'>"
             f"<div style='font-size:11px; font-weight:700; color:#666; letter-spacing:1px;'>MAGNITUDE — LOW → CLOSE</div>"
@@ -521,6 +588,73 @@ with tab_summary:
     cols_s = st.columns(3)
     for col, (n, df) in zip(cols_s, [('VNINDEX', vnindex), ('VNMIDCAP', midcap), ('VNSMALLCAP', smallcap)]):
         summary_card(col, n, df, stats_by_name[n])
+
+    # ── Conclusion synthesis ────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("Conclusion")
+    bullet_parts = []
+    for name, df in [('VNINDEX', vnindex), ('VNMIDCAP', midcap), ('VNSMALLCAP', smallcap)]:
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+        label = last['label']
+        color = COLORS[label]
+        _, run_lab, run_len, run_pct, _, _ = current_run_info(df)
+        s = stats_by_name[name]
+        hist_runs = s['train_runs'].get(run_lab, []) + s['test_runs'].get(run_lab, [])
+        hist_mags = s['train_mags'].get(run_lab, []) + s['test_mags'].get(run_lab, [])
+        med_len = int(np.median(hist_runs)) if hist_runs else 0
+        med_mag = float(np.median(hist_mags)) if hist_mags else 0.0
+
+        fwd = forward_stats_for_regime(df, label)
+        test_t5 = fwd.get(('Test (2025+)', 'T+5'), {})
+        train_t5 = fwd.get(('Train (≤2024)', 'T+5'), {})
+
+        # Shift warning
+        rivals = []
+        for lab, p, p_prev in [('Bull', float(last['p_Bull']), float(prev['p_Bull'])),
+                               ('Neutral', float(last['p_Neutral']), float(prev['p_Neutral'])),
+                               ('Bear', float(last['p_Bear']), float(prev['p_Bear']))]:
+            if lab != label and (p >= 0.05 or (p - p_prev) >= 0.05):
+                rivals.append(f"P({lab})={p*100:.0f}%")
+        shift_note = f" ⚠ rival rising: {' '.join(rivals)}" if rivals else " ✓ stable"
+
+        # Bias verdict from T+5 test win rate + median return
+        if test_t5:
+            w, m = test_t5['win'], test_t5['med']
+            if w >= 0.55 and m > 0.002:
+                verdict = "**Bias: long-favored**"
+            elif w <= 0.45 and m < -0.002:
+                verdict = "**Bias: avoid / short-favored**"
+            else:
+                verdict = "**Bias: neutral / no edge**"
+        else:
+            verdict = "**Bias: insufficient data**"
+
+        bullet_parts.append(
+            f"<li style='margin-bottom:14px;'>"
+            f"<span style='display:inline-block; padding:2px 10px; background:{color}; "
+            f"color:#fff; font-weight:700; border-radius:4px; font-size:11px; letter-spacing:1px;'>"
+            f"{name} · {label.upper()}</span>"
+            f"<span style='color:#666; font-size:12px; margin-left:8px;'>{shift_note}</span>"
+            f"<div style='margin-top:6px; font-size:13px; color:#222; line-height:1.6;'>"
+            f"In <b>{label}</b> for <b>{run_len} bars</b> (hist median {med_len}); "
+            f"price <b>{run_pct:+.2f}%</b> from run low (hist {label} median {med_mag:+.2f}%). "
+            f"Historical T+5 in {label} regime: "
+            f"train win <b>{train_t5.get('win',0)*100:.0f}%</b> / median <b>{train_t5.get('med',0)*100:+.2f}%</b>, "
+            f"test win <b>{test_t5.get('win',0)*100:.0f}%</b> / median <b>{test_t5.get('med',0)*100:+.2f}%</b> "
+            f"(up <b>+{test_t5.get('up',0)*100:.1f}%</b> / dn <b>{test_t5.get('dn',0)*100:.1f}%</b>). "
+            f"{verdict}.</div></li>"
+        )
+
+    st.markdown(
+        "<ul style='list-style:none; padding-left:0;'>" + ''.join(bullet_parts) + "</ul>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Bias rule (heuristic): **long-favored** if test T+5 win rate ≥ 55% and median return > +0.2%. "
+        "**Avoid** if win rate ≤ 45% and median < −0.2%. Else **neutral**. "
+        "T+5 = open-to-open 5-bar holding. Not financial advice."
+    )
 
 # ─────────────────────────────── Tab 1: Dashboard ───────────────────────────
 
