@@ -944,6 +944,37 @@ with tab_imp:
 
         u3, u5, u8, u10 = universal_n(3), universal_n(5), universal_n(8), universal_n(10)
 
+        # Features unique to each method's top-10 (vs the universal top-8)
+        unique_per_method = {
+            label: [f for f in top10[m] if f not in u8]
+            for m, _, label, _ in metrics_def
+        }
+
+        # ── Conclusion at the top ────────────────────────────────────────────
+        st.subheader("Conclusion — what's important & where methods disagree")
+        st.markdown(
+            "<div style='padding:16px 20px; background:#f0f7fb; border-left:5px solid #3498db; "
+            "border-radius:8px; font-size:14px; line-height:1.7; color:#222;'>"
+            f"<b>Strong consensus:</b> {len(u8)} features appear in <b>every</b> method's top-10 — "
+            f"a high-agreement core: {', '.join(f'<code>{f}</code>' for f in u8)}. "
+            f"<code>ULT_RSI</code> is rank&nbsp;1 in all 4 methods. The trend family "
+            f"(<code>DMI_plusDI/minusDI/ADX</code>) plus momentum (<code>AMACD/AMACD_signal</code>) "
+            f"plus a single breadth feature (<code>pct_below_ema200</code>) is what every method picks first.<br><br>"
+            f"<b>Where methods disagree (top-10 slot 9–10):</b><br>"
+            + "".join(
+                f"&nbsp;&nbsp;• <b>{label}</b> adds {', '.join(f'<code>{f}</code>' for f in unique_per_method[label])}<br>"
+                for label in ['η²', 'RF Gini', 'SHAP', 'Wass']
+                if unique_per_method.get(label)
+            )
+            + "<br><b>Notable divergence:</b> <b>SHAP</b> is the only method that ranks "
+            f"<code>fgn_share_20d</code> in its top-10 — XGBoost finds non-linear value in "
+            "foreign-participation that univariate scores (η², Wass) miss. "
+            "η²/RF/Wass fill their last slots with <code>BBWP</code> (volatility-expansion) features instead."
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("---")
+
         # ── Consensus summary cards ──
         st.subheader("Consensus across 4 methods")
         m1, m2, m3, m4 = st.columns(4)
@@ -957,11 +988,14 @@ with tab_imp:
             f"**Top-8 universal:** {', '.join(f'`{f}`' for f in u8)}"
         )
 
-        # ── 4 horizontal bar charts side by side ──
+        # ── 4 horizontal bar charts in a 2×2 grid (wider per chart → readable values) ──
         st.markdown("---")
         st.subheader("Top-10 by each method (interactive)")
-        chart_cols = st.columns(4)
-        for (m, mkey, label, mcol), col in zip(metrics_def, chart_cols):
+        st.caption(
+            "Gold = in all 4 methods' top-10 · Gray = in 3 · Tan = in 2 · Red = unique to one method"
+        )
+
+        def _render_chart(col, m, mkey, label, mcol):
             with col:
                 top_df = imp.sort_values(m, ascending=False).head(10).iloc[::-1]
                 bar_colors = [
@@ -971,6 +1005,7 @@ with tab_imp:
                     '#e74c3c'
                     for f in top_df['feature']
                 ]
+                vmax = float(top_df[m].max())
                 fig = go.Figure(go.Bar(
                     x=top_df[m],
                     y=top_df['feature'],
@@ -978,23 +1013,27 @@ with tab_imp:
                     marker=dict(color=bar_colors, line=dict(width=0)),
                     text=[f"{v:.3f}" for v in top_df[m]],
                     textposition='outside',
-                    textfont=dict(size=13, family='DM Mono'),
+                    textfont=dict(size=14, family='DM Mono', color='#222'),
+                    cliponaxis=False,
                     hovertemplate='<b>%{y}</b><br>' + label + ' = %{x:.4f}<extra></extra>',
                 ))
                 fig.update_layout(
                     title=dict(
                         text=f"<b style='color:{mcol}'>{label}</b>",
                         x=0.5,
-                        font=dict(size=18, family='DM Sans'),
+                        font=dict(size=20, family='DM Sans'),
                     ),
-                    height=440,
-                    margin=dict(l=10, r=60, t=54, b=20),
+                    height=420,
+                    margin=dict(l=10, r=90, t=58, b=24),
                     plot_bgcolor='#fafbfc',
-                    xaxis=dict(showgrid=True, gridcolor='#eee', tickfont=dict(size=13, family='DM Sans')),
+                    xaxis=dict(
+                        showgrid=True, gridcolor='#eee',
+                        tickfont=dict(size=12, family='DM Sans'),
+                        range=[0, vmax * 1.22],  # 22% headroom so outside text labels fit
+                    ),
                     yaxis=dict(tickfont=dict(size=14, family='DM Sans')),
                     font=dict(family='DM Sans'),
                 )
-                # key is unique: tab prefix + metric key
                 st.plotly_chart(
                     fig,
                     use_container_width=True,
@@ -1002,9 +1041,12 @@ with tab_imp:
                     key=f"imp_bar_{mkey}",
                 )
 
-        st.caption(
-            "Gold = in all 4 methods' top-10 · Gray = in 3 · Tan = in 2 · Red = unique to one method"
-        )
+        # 2×2 grid
+        row1 = st.columns(2)
+        row2 = st.columns(2)
+        layout_cells = [row1[0], row1[1], row2[0], row2[1]]
+        for cell, (m, mkey, label, mcol) in zip(layout_cells, metrics_def):
+            _render_chart(cell, m, mkey, label, mcol)
 
         # ── Divergence table ──
         unique = []
