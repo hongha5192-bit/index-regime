@@ -1430,27 +1430,35 @@ with tab_lm:
                 rows.append({
                     'Scenario':         label,
                     'Schema':           schema,
-                    'Selected 5D':      r['selected_ret_5d_mean']   * 100.0,
-                    'Unselected 5D':    r['unselected_ret_5d_mean'] * 100.0,
-                    'Gap':              r['gap_5d_mean']            * 100.0,
-                    'Gap positive %':   r['gap_win_rate']           * 100.0,
+                    'Gap':              r['gap_5d_mean']           * 100.0,
+                    'Gap win %':        r['gap_win_rate']          * 100.0,
+                    'Gap PF':           float(r['gap_profit_factor']),
+                    'Sel win %':        r['selected_win_rate']     * 100.0,
+                    'Unsel win %':      r['unselected_win_rate']   * 100.0,
                 })
         if rows:
             gdf = pd.DataFrame(rows)
             st.dataframe(
                 gdf, hide_index=True, use_container_width=True, key="lm_gap_diag",
                 column_config={
-                    'Selected 5D':     st.column_config.NumberColumn(format='%+.3f%%'),
-                    'Unselected 5D':   st.column_config.NumberColumn(format='%+.3f%%'),
-                    'Gap':             st.column_config.NumberColumn(format='%+.3f%%'),
-                    'Gap positive %':  st.column_config.NumberColumn(format='%.1f%%'),
+                    'Gap':         st.column_config.NumberColumn('Gap 5D',     format='%+.3f%%',
+                                       help='Mean selected − unselected 5-day forward return'),
+                    'Gap win %':   st.column_config.NumberColumn(format='%.1f%%',
+                                       help='Share of days the selected basket beats unselected'),
+                    'Gap PF':      st.column_config.NumberColumn('Gap profit factor', format='%.2f',
+                                       help='Sum of positive gap days / |sum of negative gap days|'),
+                    'Sel win %':   st.column_config.NumberColumn(format='%.1f%%',
+                                       help='Share of days selected basket has positive 5D return'),
+                    'Unsel win %': st.column_config.NumberColumn(format='%.1f%%',
+                                       help='Share of days unselected basket has positive 5D return'),
                 },
             )
             st.caption(
-                "**Read:** both schemas show a real selected-minus-unselected spread on the default "
-                "TOPK_5 (~0.62%/5d). `26f` has stronger realised portfolio P&L; `tr_price7f` posts a "
-                "slightly larger TOPK_3 raw-selection gap. The gap-positive rate (~55%) is the share "
-                "of days where the selected basket beats the unselected basket forward."
+                "**Read:** both schemas show a real selected-minus-unselected spread (~0.62%/5d on "
+                "default TOPK_5) with **profit factor > 1.5** (positive-gap days more than make up "
+                "for negative-gap days). `tr_price7f` has the slightly stronger raw-selection win rate "
+                "and profit factor, but `26f` still wins on realised portfolio performance in the "
+                "`shares_cash` backtest above."
             )
 
     # ── 3. Robustness test ──────────────────────────────────────────────
