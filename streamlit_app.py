@@ -1505,9 +1505,10 @@ with tab_lm:
                 },
             )
             st.caption(
-                "**Multiseed read:** `26f` has higher mean cumulative return (+161.3%) but much higher seed "
-                "variance (Cum std 52.9% vs 14.4%). `tr_price7f` is more *stable* across random seeds even if "
-                "the headline is lower — useful for assessing live-trading reliability."
+                "**Multiseed read:** `tr_price7f` (preferred) is markedly more stable across random seeds "
+                "(Cum std 14.4% vs 52.9% for the `26f` control). The `26f` baseline posts a higher mean "
+                "cumulative return (+161.3%) but the wide seed dispersion makes that headline less reliable "
+                "in live trading — which is why we lead with `tr_price7f`."
             )
 
     # ── 7. Big Picture / Methodology ────────────────────────────────────
@@ -1528,15 +1529,16 @@ with tab_lm:
             "**Backtest**  \n"
             "Walk-forward protocol governs training/test over time. The **`shares_cash` engine** governs "
             "execution and accounting — tracking shares, cash, open-price execution, transaction fees, "
-            "forced holds, and weight drift. Final reported results combine both."
+            "forced holds, and weight drift. Universe is gated by a **10 bn VND point-in-time liquidity** "
+            "filter to keep names tradable at realistic size."
         )
     with col_b:
         st.markdown(
             "**Feature schemas**  \n"
-            "- `26f` — rich technical-analysis baseline (DMI, BBWP, ULT_RSI, …)\n"
-            "- `tr_price7f` — simpler raw-price decomposition (overnight, intraday, range)\n\n"
-            "Both schemas use **equal-weighted top-5** portfolios in the figures above. "
-            "`26f` tends to win on raw returns; `tr_price7f` is more stable across seeds."
+            "- `tr_price7f` — **preferred**: simpler raw-price decomposition (overnight, intraday, range)\n"
+            "- `26f` — **baseline / control**: rich technical-analysis stack (DMI, BBWP, ULT_RSI, …)\n\n"
+            "Both schemas use **equal-weighted top-5** portfolios. `tr_price7f` is preferred for its "
+            "seed stability and universe robustness; `26f` is retained as a higher-headline control."
         )
         st.markdown(
             "**Why this matters**  \n"
@@ -1552,9 +1554,12 @@ with tab_lm:
         "border-radius:10px; font-size:14px; line-height:1.8;'>"
         "<div style='font-size:13px; font-weight:700; color:#b9770e; letter-spacing:1px; margin-bottom:6px;'>"
         "FINAL CONCLUSION</div>"
-        "<b>Both <code>26f</code> and <code>tr_price7f</code> beat VNINDEX over the test window</b> "
-        "(+132% to +167% alpha, EqWt). <code>26f</code> wins on headline returns; "
-        "<code>tr_price7f</code> wins on seed stability and universe robustness.<br><br>"
+        "<b>Final framing:</b> <code>tr_price7f</code> EqWt is the <b>preferred schema</b>; "
+        "<code>26f</code> EqWt is the <b>baseline / control</b>. "
+        "Both beat VNINDEX over the test window (+132% to +167% alpha, EqWt) under the "
+        "10 bn VND point-in-time liquidity gate with <code>shares_cash</code> execution. "
+        "<code>tr_price7f</code> is chosen for its seed stability and universe robustness; "
+        "<code>26f</code> posts a higher headline but with much wider seed dispersion.<br><br>"
         "<b>Do not treat this as production-ready.</b> 2026 YTD alpha is negative for both schemas. "
         "Drawdowns are still large (-48% to -52% in default setup). Performance weakens at slower rebalancing "
         "and in wider books. The edge is regime-dependent. Live paper trading, stricter transaction-cost "
