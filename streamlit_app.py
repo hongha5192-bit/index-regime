@@ -1294,97 +1294,84 @@ with tab_lm:
         h26_3 = _legacy_scen(rob_26_legacy, 'TOPK_3')
         h7f_5 = _legacy_scen(rob_7f_legacy, 'TOPK_5')
 
-    # ── 1. Header / Status cards ────────────────────────────────────────
-    if is_top100liq:
-        c1, c2, c3, c4, c5 = st.columns(5)
-        if h26_5 is not None:
-            c1.metric("26f TOPK_5 · Cum",    _fmt_pct(h26_5['cum']),    help="Preferred: Top100 liquid ex-ETF · TOPK_5 · RB_5 · shares_cash · EqWt")
-            c2.metric("26f TOPK_5 · Sharpe", _fmt_sharpe(h26_5['sharpe']))
-            c3.metric("26f TOPK_5 · MDD",    _fmt_mdd(h26_5['mdd']))
-        if h26_3 is not None:
-            c4.metric("26f TOPK_3 · Cum",    _fmt_pct(h26_3['cum']),    help="Concentrated variant — same setup with TOPK_3")
-            c5.metric("26f TOPK_3 · Sharpe", _fmt_sharpe(h26_3['sharpe']))
-    else:
-        c1, c2, c3, c4 = st.columns(4)
-        if h26_5 is not None:
-            c1.metric("26f TOPK_5 · Cum",    _fmt_pct(h26_5['cum']),    help="Legacy: 10 bn PIT liquidity · TOPK_5 · RB_5 · shares_cash · EqWt")
-            c2.metric("26f TOPK_5 · Sharpe", _fmt_sharpe(h26_5['sharpe']))
-            c3.metric("26f TOPK_5 · MDD",    _fmt_mdd(h26_5['mdd']))
-        if h7f_5 is not None:
-            c4.metric("tr_price7f TOPK_5 · Cum", _fmt_pct(h7f_5['cum']), help="Same setup, 7-feature price-decomposition schema")
+    # ── 1. Latest portfolio — 26f & 7f (with schema explainer) ──────────
+    st.markdown("---")
+    st.subheader("1. Latest portfolio — 26f & tr_price7f")
 
-    if is_top100liq:
-        banner_html = (
-            "<b>Research candidate:</b> cross-sectional LambdaMART on Vietnam equities, "
-            "restricted to the quarterly <b>Top100-by-100-day-traded-value</b> universe with ETFs "
-            "(<code>E1VFVN30</code>, <code>FUEVFVND</code>) removed. Two schemas compared: "
-            "<code>26f</code> (preferred — technical stack) and <code>tr_price7f</code> (comparison — "
-            "raw-price decomposition)."
+    # Schema explainer side-by-side
+    exp_a, exp_b = st.columns(2)
+    with exp_a:
+        st.markdown(
+            "<div style='padding:12px 14px; background:#eef5fb; border:1px solid #3498db; "
+            "border-radius:8px; font-size:13px; line-height:1.6;'>"
+            "<span style='display:inline-block; padding:2px 10px; background:#3498db; color:#fff; "
+            "font-size:11px; font-weight:700; border-radius:10px; letter-spacing:1px;'>26F</span>"
+            " &nbsp;<b>Technical-analysis stack</b> — 26 features built from DMI, ULT_RSI, AMACD, "
+            "BBWP families plus streak/breadth signals. Captures momentum, trend strength, and "
+            "volatility-band context."
+            "</div>",
+            unsafe_allow_html=True,
         )
-        banner_border = "#3498db"
-    else:
-        banner_html = (
-            "<b>Legacy mandate:</b> the previous Top100-by-marketcap universe gated by a "
-            "<b>≥10 bn VND point-in-time daily-traded-value</b> filter. Kept for comparison so the new "
-            "Top100-liquid mandate can be benchmarked against the prior published numbers."
+    with exp_b:
+        st.markdown(
+            "<div style='padding:12px 14px; background:#fdf3e9; border:1px solid #e67e22; "
+            "border-radius:8px; font-size:13px; line-height:1.6;'>"
+            "<span style='display:inline-block; padding:2px 10px; background:#e67e22; color:#fff; "
+            "font-size:11px; font-weight:700; border-radius:10px; letter-spacing:1px;'>TR_PRICE7F</span>"
+            " &nbsp;<b>Raw-price decomposition</b> — 7 features built directly from price components "
+            "(overnight gap, intraday move, true range, etc.). Lighter, less-engineered alternative "
+            "to 26f."
+            "</div>",
+            unsafe_allow_html=True,
         )
-        banner_border = "#7f8c8d"
 
-    st.markdown(
-        f"<div style='padding:14px 18px; margin-top:10px; background:#f0f7fb; "
-        f"border-left:5px solid {banner_border}; border-radius:8px; font-size:13px; line-height:1.7;'>"
-        f"{banner_html} "
-        f"<span style='display:inline-block; margin-left:6px; padding:2px 8px; background:#f39c12; "
-        f"color:#fff; font-size:11px; font-weight:700; border-radius:10px;'>RESEARCH ONLY</span>"
-        f"</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(" ")  # small visual gap
 
-    # ── 2. Universe definition ──────────────────────────────────────────
-    if is_top100liq:
-        st.markdown("---")
-        st.subheader("Universe — quarterly Top100 liquid, ETFs excluded")
-        uni_a, uni_b = st.columns([2, 1])
-        with uni_a:
-            st.markdown(
-                "**Construction**  \n"
-                "- For each quarter, rank tickers by **average traded value** over the **prior 100 trading days**.\n"
-                "- Select the **top 100** by that ranking.\n"
-                "- ETFs are **excluded** at the experiment layer (<code>E1VFVN30</code>, <code>FUEVFVND</code>).\n"
-                "- The resulting universe is the eligible pool LambdaMART ranks each day."
-                , unsafe_allow_html=True
+    def _render_holdings(col, df, schema_name, key_suffix):
+        with col:
+            label_color = '#3498db' if schema_name == '26f' else '#e67e22'
+            badge = (
+                f"<span style='display:inline-block; padding:2px 10px; background:{label_color}; "
+                f"color:#fff; font-size:11px; font-weight:700; border-radius:10px; letter-spacing:1px;'>"
+                f"{schema_name.upper()}</span>"
             )
+            if df is None or not len(df):
+                st.markdown(
+                    badge + "<span style='margin-left:8px; color:#888; font-size:13px; "
+                    "font-style:italic;'>holdings file not found</span>",
+                    unsafe_allow_html=True,
+                )
+                return
+            portfolio_date = df['portfolio_date'].iloc[0] if 'portfolio_date' in df.columns else df['Date'].iloc[0]
             st.markdown(
-                "**Why this universe**  \n"
-                "Caps the model to names that are realistically tradable at meaningful size. The lowest-ranked "
-                "name in the latest 2026Q2 cut (DPG, rank 99) still trades around 31 bn VND/day on average — "
-                "well above retail-only thresholds."
-            )
-        with uni_b:
-            st.markdown(
-                "<div style='padding:12px 14px; background:#fafbfc; border:1px solid #e1e4e8; "
-                "border-radius:8px; font-size:13px; line-height:1.8;'>"
-                "<b>Latest 2026Q2 cut</b><br>"
-                "Names after ETF exclusion: <b>99</b><br>"
-                "Coverage: 2026-04-01 → 2026-05-12<br>"
-                "Min liquidity: <code>DPG</code> @ ~31 bn VND/day<br>"
-                "Excluded ETFs: <code>E1VFVN30</code>, <code>FUEVFVND</code>"
-                "</div>",
+                f"{badge}<span style='margin-left:10px; color:#666; font-size:12px;'>"
+                f"top 5 EqWt as of <code>{portfolio_date}</code></span>",
                 unsafe_allow_html=True,
             )
-    else:
-        st.markdown("---")
-        st.subheader("Universe — Top100 marketcap with ≥10 bn VND PIT liquidity (legacy)")
-        st.markdown(
-            "Eligible pool is the **Top100 names by market capitalisation**, further gated by a "
-            "**point-in-time ≥10 bn VND/day traded-value** floor. ETFs were not explicitly excluded "
-            "in this branch. This is the prior mandate, retained here for direct comparison against "
-            "the new Top100 liquid (ex-ETF) results."
-        )
+            disp = df.copy()
+            if 'eq_weight' in disp.columns:
+                disp['eq_weight'] = disp['eq_weight'] * 100.0
+            if 'Avg_Value' in disp.columns:
+                disp['Avg_Value'] = disp['Avg_Value'] / 1e9
+            cols_show = [c for c in ['Ticker','score','eq_weight','Liq_Rank','Avg_Value'] if c in disp.columns]
+            st.dataframe(
+                disp[cols_show], hide_index=True, use_container_width=True,
+                key=f"lm_holdings_{key_suffix}",
+                column_config={
+                    'score':     st.column_config.NumberColumn('Score',     format='%.5f'),
+                    'eq_weight': st.column_config.ProgressColumn('Weight (EqWt)', format='%.1f%%', min_value=0.0, max_value=100.0),
+                    'Liq_Rank':  st.column_config.NumberColumn('Liq Rank',  format='%d'),
+                    'Avg_Value': st.column_config.NumberColumn('Avg Value (bn VND)', format='%.0f'),
+                },
+            )
 
-    # ── 3. Default performance (TOPK_5) ─────────────────────────────────
+    h26_col, h7f_col = st.columns(2)
+    _render_holdings(h26_col, h_26_top5, '26f',        '26f_top5')
+    _render_holdings(h7f_col, h_7f_top5, 'tr_price7f', '7f_top5')
+
+    # ── 2. Backtest results ─────────────────────────────────────────────
     st.markdown("---")
-    st.subheader("Default Performance — TOPK_5, RB_5, EqWt")
+    st.subheader("2. Backtest results — 26f & tr_price7f")
     st.caption(
         ("Top100 liquid ex-ETF" if is_top100liq else "Top100 marketcap · ≥10 bn PIT liquidity")
         + " · top_k=5 · rebalance_days=5 · `shares_cash` engine · alpha vs VNINDEX"
@@ -1417,139 +1404,12 @@ with tab_lm:
                     'Beat years':  st.column_config.NumberColumn(format='%d'),
                 },
             )
-            if is_top100liq:
-                st.caption(
-                    "**Read:** `26f` clearly beats `tr_price7f` on the Top100 liquid ex-ETF universe — "
-                    "+168.9% vs +93.5% cumulative return, Sharpe 0.751 vs 0.490. Drawdowns are comparable "
-                    "and large in both (-38.3% vs -41.4%). Both beat VNINDEX over the test window."
-                )
-            else:
-                st.caption(
-                    "**Read (legacy):** under the 10 bn PIT marketcap mandate, `26f` and `tr_price7f` are "
-                    "much closer on the default TOPK_5 — `26f` slightly ahead on cumulative return, but "
-                    "with comparable Sharpe and drawdown. Use this branch only as a benchmark against "
-                    "the new Top100-liquid (ex-ETF) numbers above."
-                )
 
-    # ── 4. Latest holdings for both schemas (TOPK_5) ────────────────────
+    # ── 3. Robustness test ──────────────────────────────────────────────
     st.markdown("---")
-    st.subheader("Latest Holdings — TOPK_5 EqWt (26f preferred · tr_price7f comparison)")
-
-    def _render_top100liq_holdings(col, df, schema_name, key_suffix):
-        with col:
-            label_color = '#3498db' if schema_name == '26f' else '#e67e22'
-            role        = 'PREFERRED' if schema_name == '26f' else 'COMPARISON'
-            role_color  = '#27ae60'   if schema_name == '26f' else '#7f8c8d'
-            badge = (
-                f"<span style='display:inline-block; padding:2px 10px; background:{label_color}; "
-                f"color:#fff; font-size:11px; font-weight:700; border-radius:10px; letter-spacing:1px;'>"
-                f"{schema_name.upper()}</span>"
-                f"<span style='display:inline-block; margin-left:6px; padding:2px 8px; background:{role_color}; "
-                f"color:#fff; font-size:10px; font-weight:700; border-radius:8px; letter-spacing:0.5px;'>"
-                f"{role}</span>"
-            )
-            if df is None or not len(df):
-                st.markdown(
-                    badge + "<span style='margin-left:8px; color:#888; font-size:13px; "
-                    "font-style:italic;'>holdings file not found</span>",
-                    unsafe_allow_html=True,
-                )
-                return
-            portfolio_date = df['portfolio_date'].iloc[0] if 'portfolio_date' in df.columns else df['Date'].iloc[0]
-            st.markdown(
-                f"{badge}<span style='margin-left:10px; color:#666; font-size:12px;'>"
-                f"as of <code>{portfolio_date}</code></span>",
-                unsafe_allow_html=True,
-            )
-            disp = df.copy()
-            if 'eq_weight' in disp.columns:
-                disp['eq_weight'] = disp['eq_weight'] * 100.0
-            if 'Avg_Value' in disp.columns:
-                disp['Avg_Value'] = disp['Avg_Value'] / 1e9  # → bn VND
-            cols_show = [c for c in ['Ticker','score','eq_weight','Liq_Rank','Avg_Value'] if c in disp.columns]
-            st.dataframe(
-                disp[cols_show], hide_index=True, use_container_width=True,
-                key=f"lm_top100liq_holdings_{key_suffix}",
-                column_config={
-                    'score':     st.column_config.NumberColumn('Score',     format='%.5f'),
-                    'eq_weight': st.column_config.ProgressColumn('Weight (EqWt)', format='%.1f%%', min_value=0.0, max_value=100.0),
-                    'Liq_Rank':  st.column_config.NumberColumn('Liq Rank',  format='%d', help='Rank within the Top100 liquid universe'),
-                    'Avg_Value': st.column_config.NumberColumn('Avg Value (bn VND)', format='%.0f'),
-                },
-            )
-
-    h26_col, h7f_col = st.columns(2)
-    _render_top100liq_holdings(h26_col, h_26_top5, '26f',        '26f_top5')
-    _render_top100liq_holdings(h7f_col, h_7f_top5, 'tr_price7f', '7f_top5')
-
-    if is_top100liq:
-        st.caption("**Overlap:** both schemas currently agree on **VIX, LPB, VRE, BSR**. "
-                   "`26f` adds **NVL**; `tr_price7f` adds **VHM**.")
-    else:
-        st.caption("**Legacy holdings** under the 10 bn PIT marketcap mandate — kept for comparison "
-                   "against the Top100 liquid ex-ETF holdings above.")
-
-    # ── 5. Yearly performance ───────────────────────────────────────────
-    if is_top100liq and yearly_df is not None:
-        st.markdown("---")
-        st.subheader("Yearly Performance — EqWt")
-
-        ydf_raw = yearly_df[yearly_df['config'] == 'EqWt'].copy()
-        y26 = ydf_raw[ydf_raw['schema'] == '26f'][['year', 'strategy_return', 'alpha']].rename(
-            columns={'strategy_return': '26f Return', 'alpha': '26f Alpha'})
-        y7f = ydf_raw[ydf_raw['schema'] == 'tr_price7f'][['year', 'strategy_return', 'alpha']].rename(
-            columns={'strategy_return': 'tr_price7f Return', 'alpha': 'tr_price7f Alpha'})
-        ybench = ydf_raw[ydf_raw['schema'] == '26f'][['year', 'vni_return']].rename(
-            columns={'vni_return': 'VNINDEX'})
-        ydf = y26.merge(y7f, on='year', how='outer').merge(ybench, on='year', how='left').sort_values('year').reset_index(drop=True)
-
-        col_r, col_a = st.columns(2)
-        with col_r:
-            fig_r = go.Figure()
-            fig_r.add_trace(go.Bar(name='26f',         x=ydf['year'].astype(str), y=ydf['26f Return']        * 100, marker_color='#3498db'))
-            fig_r.add_trace(go.Bar(name='tr_price7f',  x=ydf['year'].astype(str), y=ydf['tr_price7f Return'] * 100, marker_color='#e67e22'))
-            fig_r.add_trace(go.Bar(name='VNINDEX',     x=ydf['year'].astype(str), y=ydf['VNINDEX']           * 100, marker_color='#95a5a6'))
-            fig_r.update_layout(
-                title="<b>Strategy Return vs VNINDEX</b>",
-                barmode='group', height=340, yaxis_title='% return',
-                margin=dict(l=10, r=10, t=44, b=24), plot_bgcolor='#fafbfc',
-                font=dict(family='DM Sans'),
-            )
-            st.plotly_chart(fig_r, use_container_width=True, config={'displayModeBar': False}, key="lm_year_ret")
-        with col_a:
-            fig_a = go.Figure()
-            fig_a.add_trace(go.Bar(name='26f',         x=ydf['year'].astype(str), y=ydf['26f Alpha']        * 100, marker_color='#3498db'))
-            fig_a.add_trace(go.Bar(name='tr_price7f',  x=ydf['year'].astype(str), y=ydf['tr_price7f Alpha'] * 100, marker_color='#e67e22'))
-            fig_a.update_layout(
-                title="<b>Alpha vs VNINDEX</b>",
-                barmode='group', height=340, yaxis_title='% alpha',
-                margin=dict(l=10, r=10, t=44, b=24), plot_bgcolor='#fafbfc',
-                font=dict(family='DM Sans'),
-            )
-            fig_a.add_hline(y=0, line=dict(color='#888', width=1, dash='dot'))
-            st.plotly_chart(fig_a, use_container_width=True, config={'displayModeBar': False}, key="lm_year_alpha")
-
-        ydisp = ydf.copy()
-        for col in ['26f Return','26f Alpha','tr_price7f Return','tr_price7f Alpha','VNINDEX']:
-            if col in ydisp.columns:
-                ydisp[col] = ydisp[col] * 100.0
-        st.dataframe(
-            ydisp, hide_index=True, use_container_width=True, key="lm_year_table",
-            column_config={
-                'year':              st.column_config.NumberColumn('Year', format='%d'),
-                '26f Return':        st.column_config.NumberColumn(format='%+.1f%%'),
-                '26f Alpha':         st.column_config.NumberColumn(format='%+.1f%%'),
-                'tr_price7f Return': st.column_config.NumberColumn(format='%+.1f%%'),
-                'tr_price7f Alpha':  st.column_config.NumberColumn(format='%+.1f%%'),
-                'VNINDEX':           st.column_config.NumberColumn(format='%+.1f%%'),
-            },
-        )
-        st.caption("**Read:** `26f` has the stronger full-period record. `tr_price7f` is better in 2026 YTD, "
-                   "but the prior-years gap and robustness evidence still favour `26f`. **2026 YTD is a partial year.**")
-
-    # ── 6. Robustness ───────────────────────────────────────────────────
-    st.markdown("---")
-    st.subheader("Robustness — EqWt by scenario")
+    st.subheader("3. Robustness test")
+    st.caption("EqWt cumulative return / Sharpe / max-drawdown across portfolio-width, "
+               "rebalance-cadence, and universe-cutoff scenarios.")
 
     if is_top100liq:
         scenarios = ['TOPK_3', 'TOPK_5', 'TOPK_10', 'RB_10', 'RB_20', 'LIQ_TOP90_EXETF', 'LIQ_TOP70_EXETF']
@@ -1573,12 +1433,6 @@ with tab_lm:
                 'tr_price7f Sharpe': float(r7f['sharpe']),
                 'tr_price7f MDD':    r7f['mdd']    * 100.0,
             })
-        rob_caption = (
-            "**Robustness read:** `26f` wins the default TOPK_5, the concentrated TOPK_3, the wider "
-            "TOPK_10, and both LIQ_TOP90/70 universe-stress cuts. The clear exception is **RB_10**, "
-            "where `tr_price7f` is materially stronger (+219.8% vs +81.2%). Slower RB_20 is weak for "
-            "both. Net: `26f` is the more robust schema on this universe."
-        )
     else:
         scenarios = ['TOPK_3', 'TOPK_5', 'TOPK_10', 'RB_10', 'RB_20', 'UNIV_TOP90', 'UNIV_TOP70']
         scenario_labels = {sc: sc for sc in scenarios}
@@ -1597,12 +1451,6 @@ with tab_lm:
                 'tr_price7f Sharpe': float(r7f['sharpe']),
                 'tr_price7f MDD':    r7f['mdd']    * 100.0,
             })
-        rob_caption = (
-            "**Robustness read (legacy):** under the 10 bn PIT marketcap mandate, results vary materially "
-            "across scenarios. Both schemas hold up in concentrated faster setups (`TOPK_3/5`) and degrade "
-            "in slower (`RB_20`) and narrower-universe (`UNIV_TOP90/70`) variants. Use this as a benchmark "
-            "for the new Top100 liquid (ex-ETF) numbers."
-        )
 
     if rob_rows:
         rdf = pd.DataFrame(rob_rows)
@@ -1617,136 +1465,44 @@ with tab_lm:
                 'tr_price7f MDD':    st.column_config.NumberColumn(format='%.1f%%'),
             },
         )
-        st.caption(rob_caption)
 
-    # ── 7. TOPK_3 focused section (Top100 liquid only) ──────────────────
-    if is_top100liq:
-        st.markdown("---")
-        st.subheader("Focused View — 26f TOPK_3 EqWt (concentrated variant)")
-
-        top3_png_path = os.path.join(LM_DIR, 'lambdamart_top100liq_26f_top3_yearly_bar.png')
-        t3a, t3b = st.columns([2, 1])
-        with t3a:
-            if os.path.exists(top3_png_path):
-                st.image(top3_png_path, use_container_width=True)
-        with t3b:
-            if h26_3 is not None:
-                st.metric("Cum return", _fmt_pct(h26_3['cum']))
-                st.metric("Sharpe",     _fmt_sharpe(h26_3['sharpe']))
-                st.metric("Max DD",     _fmt_mdd(h26_3['mdd']))
-                st.metric("Beat years", f"{int(h26_3['beat_years'])}")
-
-        st.caption(
-            "TOPK_3 concentrates the same `26f` ranking into just 3 names per day. Cumulative return jumps "
-            "to +316.6% with Sharpe 1.003 — but drawdowns widen (-41.3%) and 2025 underperforms VNINDEX. "
-            "Use as a higher-conviction, higher-variance variant of the TOPK_5 preferred branch."
-        )
-
-        # Latest TOPK_3 holdings
-        if h_26_top3 is not None and len(h_26_top3):
-            portfolio_date_3 = h_26_top3['portfolio_date'].iloc[0] if 'portfolio_date' in h_26_top3.columns else h_26_top3['Date'].iloc[0]
-            st.markdown(
-                f"<div style='margin-top:8px; font-size:13px; color:#666;'>"
-                f"<b>Latest 26f TOPK_3 holdings</b> as of <code>{portfolio_date_3}</code></div>",
-                unsafe_allow_html=True,
-            )
-            disp3 = h_26_top3.copy()
-            if 'eq_weight' in disp3.columns: disp3['eq_weight'] = disp3['eq_weight'] * 100.0
-            if 'Avg_Value' in disp3.columns: disp3['Avg_Value'] = disp3['Avg_Value'] / 1e9
-            cols_show = [c for c in ['Ticker','score','eq_weight','Liq_Rank','Avg_Value'] if c in disp3.columns]
-            st.dataframe(
-                disp3[cols_show], hide_index=True, use_container_width=True, key="lm_top3_holdings",
-                column_config={
-                    'score':     st.column_config.NumberColumn('Score',     format='%.5f'),
-                    'eq_weight': st.column_config.ProgressColumn('Weight (EqWt)', format='%.1f%%', min_value=0.0, max_value=100.0),
-                    'Liq_Rank':  st.column_config.NumberColumn('Liq Rank',  format='%d'),
-                    'Avg_Value': st.column_config.NumberColumn('Avg Value (bn VND)', format='%.0f'),
-                },
-            )
-
-    # ── 8. Methodology & caveats ────────────────────────────────────────
+    # ── 4. Conclusion ───────────────────────────────────────────────────
     st.markdown("---")
-    st.subheader("Methodology & caveats")
+    st.subheader("4. Conclusion — performance & robustness")
 
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.markdown(
-            "**Model**  \n"
-            "LambdaMART is a **cross-sectional stock-ranking** model. Each trading date is one ranking query. "
-            "Trained with **XGBoost `rank:ndcg`** (LambdaMART/LambdaRank objective). Labels are top-heavy "
-            "forward-return grades, not regression targets."
-        )
-        if is_top100liq:
-            st.markdown(
-                "**Backtest**  \n"
-                "Walk-forward over time. The **`shares_cash` engine** governs execution and accounting — "
-                "shares, cash, open-price execution, transaction fees, forced holds, weight drift. "
-                "Universe is the **quarterly Top100 by prior-100-day traded value, ETFs excluded**."
-            )
-        else:
-            st.markdown(
-                "**Backtest (legacy)**  \n"
-                "Walk-forward over time, **`shares_cash`** engine, open-price execution, transaction fees. "
-                "Universe was the **Top100 by market cap** with a **point-in-time ≥10 bn VND/day liquidity** "
-                "floor. ETFs were not explicitly excluded in this branch."
-            )
-    with col_b:
-        if is_top100liq:
-            st.markdown(
-                "**Feature schemas**  \n"
-                "- `26f` — **preferred**: technical-analysis stack (DMI, BBWP, ULT_RSI, …)\n"
-                "- `tr_price7f` — **comparison**: simpler raw-price decomposition (overnight, intraday, range)\n\n"
-                "Both schemas use **equal-weighted top-5** portfolios. `26f` is preferred on the Top100 liquid "
-                "ex-ETF universe — wins default TOPK_5, TOPK_3, TOPK_10, and the LIQ_TOP90/70 cuts. The clear "
-                "exception is RB_10, where `tr_price7f` is materially stronger."
-            )
-        else:
-            st.markdown(
-                "**Feature schemas (legacy branch)**  \n"
-                "- `26f` — technical-analysis stack (DMI, BBWP, ULT_RSI, …)\n"
-                "- `tr_price7f` — simpler raw-price decomposition (overnight, intraday, range)\n\n"
-                "Both schemas use **equal-weighted top-5** portfolios. Under this legacy 10 bn PIT marketcap "
-                "mandate the two schemas land closer together; the new Top100 liquid (ex-ETF) results above "
-                "are the current preferred view."
-            )
-        st.markdown(
-            "**Caveats**  \n"
-            "Research / paper-monitoring view only. Live use still requires slippage validation, capacity "
-            "validation for actual NAV, order-size limits vs ADV, live paper trading, and a fresh review "
-            "after each data refresh. Drawdowns remain large in the default setup."
-        )
-
-    # ── 9. Final Conclusion box ─────────────────────────────────────────
-    st.markdown("---")
     if is_top100liq:
         conclusion_html = (
-            "<b>Final framing:</b> <code>26f</code> EqWt is the <b>preferred schema</b>; "
-            "<code>tr_price7f</code> EqWt is the <b>comparison</b>. "
-            "Setup: Top100 liquid ex-ETF universe · top_k=5 · rebalance_days=5 · "
-            "<code>shares_cash</code> engine.<br><br>"
-            "<code>26f</code> wins on default TOPK_5 (+168.9% cum, Sharpe 0.751), the concentrated "
-            "TOPK_3 cut (+316.6% cum, Sharpe 1.003), TOPK_10, and both LIQ_TOP90/70 universe cuts. "
-            "<code>tr_price7f</code> is retained as a comparison because it materially wins the RB_10 "
-            "slice (+219.8% vs +81.2%) and outperforms 26f in 2026 YTD.<br><br>"
-            "<b>Do not treat this as production-ready.</b> Drawdowns are still large "
-            "(-38% to -41% in the default setup). Live paper trading, stricter transaction-cost modeling, "
-            "capacity checks, and repeated audit-harness validation are required before any deployment."
+            "<b>Performance:</b> <code>26f</code> clearly beats <code>tr_price7f</code> on the default "
+            "TOPK_5 (+168.9% vs +93.5% cumulative return, Sharpe 0.751 vs 0.490). Drawdowns are "
+            "comparable and large in both (-38.3% vs -41.4%). Both schemas beat VNINDEX over the test window.<br><br>"
+            "<b>Robustness:</b> <code>26f</code> wins TOPK_3, TOPK_5, TOPK_10, and both LIQ_TOP90/70 "
+            "universe-stress cuts. The clear exception is <b>RB_10</b>, where <code>tr_price7f</code> "
+            "is materially stronger (+219.8% vs +81.2%). Slower RB_20 is weak for both schemas.<br><br>"
+            "<b>Net:</b> <code>26f</code> EqWt is the preferred branch on the Top100 liquid (ex-ETF) "
+            "universe; <code>tr_price7f</code> is a useful comparison but loses across most scenarios "
+            "except slower rebalance cadence.<br><br>"
+            "<b>Not production-ready.</b> Drawdowns remain large (-38% to -41% in the default setup). "
+            "Live paper trading, stricter transaction-cost modeling, and capacity checks are required "
+            "before any deployment."
         )
     else:
         conclusion_html = (
-            "<b>Legacy branch.</b> This view is the prior <b>Top100 marketcap with ≥10 bn VND PIT liquidity</b> "
-            "mandate, retained only as a benchmark for the new Top100 liquid (ex-ETF) results. "
-            "The current preferred view is the Top100 liquid universe — switch the dropdown at the top "
-            "of this tab to see it.<br><br>"
-            "<b>Do not treat this as production-ready.</b> Live paper trading, stricter transaction-cost "
-            "modeling, capacity checks, and repeated audit-harness validation are required before any deployment."
+            "<b>Performance (legacy):</b> under the prior Top100-marketcap-with-≥10 bn-PIT-liquidity "
+            "mandate, <code>26f</code> and <code>tr_price7f</code> land close together on the default "
+            "TOPK_5 — <code>26f</code> slightly ahead on cumulative return with comparable Sharpe and "
+            "drawdown.<br><br>"
+            "<b>Robustness (legacy):</b> mixed across scenarios. Both schemas hold up in concentrated "
+            "faster setups (TOPK_3/5) and degrade in slower (RB_20) and narrower-universe "
+            "(UNIV_TOP90/70) variants.<br><br>"
+            "<b>Net:</b> this is a <b>benchmark view</b> only — the current preferred mandate is the "
+            "Top100 liquid (ex-ETF) universe. Switch the dropdown at the top of the tab to see it.<br><br>"
+            "<b>Not production-ready.</b> Live paper trading, slippage validation, and capacity checks "
+            "are required before any deployment."
         )
     st.markdown(
         "<div style='padding:18px 22px; background:#fff8e1; border:2px solid #f39c12; "
         "border-radius:10px; font-size:14px; line-height:1.8;'>"
-        "<div style='font-size:13px; font-weight:700; color:#b9770e; letter-spacing:1px; margin-bottom:6px;'>"
-        "FINAL CONCLUSION</div>"
-        f"{conclusion_html}"
+        + conclusion_html +
         "</div>",
         unsafe_allow_html=True,
     )
