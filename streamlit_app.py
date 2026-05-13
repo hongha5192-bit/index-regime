@@ -1220,34 +1220,33 @@ with tab_lm:
     yr_26  = _load_lm_csv('lambdamart_26f_multiseed_full_shares_cash_yearly.csv',       _lm_mtime)
     holdings_legacy = _load_lm_csv('lambdamart_26f_frozen_latest_portfolio.csv',         _lm_mtime)
 
-    # Headline metrics for tr_price7f Q75 (UNIV_FULL, TOPK_5, RB_5)
+    # Headline metrics: 26f EqWt (UNIV_FULL, TOPK_5, RB_5)
+    if rob_26 is not None:
+        headline = rob_26[(rob_26['scenario'] == 'TOPK_5') & (rob_26['config'] == 'EqWt')]
+        h_26 = headline.iloc[0] if len(headline) else None
+    else:
+        h_26 = None
     if rob_7f is not None:
-        headline = rob_7f[(rob_7f['scenario'] == 'TOPK_5') & (rob_7f['config'] == 'Q75')]
-        if len(headline) == 0:
-            headline = rob_7f[rob_7f['config'] == 'Q75'].head(1)
-        h = headline.iloc[0] if len(headline) else None
+        h_7f_row = rob_7f[(rob_7f['scenario'] == 'TOPK_5') & (rob_7f['config'] == 'EqWt')]
+        h_7f = h_7f_row.iloc[0] if len(h_7f_row) else None
     else:
-        h = None
-    if ms_7f is not None:
-        ms7q = ms_7f[ms_7f['config'] == 'Q75']
-        ms7q_row = ms7q.iloc[0] if len(ms7q) else None
-    else:
-        ms7q_row = None
+        h_7f = None
 
     c1, c2, c3, c4 = st.columns(4)
-    if h is not None:
-        c1.metric("tr_price7f Q75 · Cum return", _fmt_pct(h['cum']), help="UNIV_FULL · TOPK_5 · RB_5 · shares_cash")
-        c2.metric("Sharpe",                       _fmt_sharpe(h['sharpe']))
-        c3.metric("Max drawdown",                 _fmt_mdd(h['mdd']))
-    if ms7q_row is not None:
-        c4.metric("Multiseed Cum std",            _fmt_pct(ms7q_row['cum_std']), help="5-seed std under shares_cash")
+    if h_26 is not None:
+        c1.metric("26f · Cum return",        _fmt_pct(h_26['cum']),    help="UNIV_FULL · TOPK_5 · RB_5 · shares_cash · EqWt")
+        c2.metric("26f · Sharpe",            _fmt_sharpe(h_26['sharpe']))
+        c3.metric("26f · Max drawdown",      _fmt_mdd(h_26['mdd']))
+    if h_7f is not None:
+        c4.metric("tr_price7f · Cum return", _fmt_pct(h_7f['cum']),    help="Same setup, EqWt")
 
     # Decision summary
     st.markdown(
         "<div style='padding:14px 18px; margin-top:10px; background:#f0f7fb; "
         "border-left:5px solid #3498db; border-radius:8px; font-size:13px; line-height:1.7;'>"
-        "<b>Decision:</b> <code>tr_price7f + Q75</code> is the current leading research candidate. "
-        "<code>26f</code> remains the baseline/control. "
+        "<b>Research candidate:</b> cross-sectional LambdaMART ranking on Vietnam equities, "
+        "evaluated under <code>shares_cash</code> walk-forward backtest. Two feature schemas compared: "
+        "<code>26f</code> (technical baseline) and <code>tr_price7f</code> (simpler price-decomposition). "
         "<span style='display:inline-block; margin-left:6px; padding:2px 8px; background:#f39c12; "
         "color:#fff; font-size:11px; font-weight:700; border-radius:10px;'>RESEARCH ONLY</span>"
         "</div>",
@@ -1307,22 +1306,17 @@ with tab_lm:
                 unsafe_allow_html=True,
             )
             disp = df.copy()
-            if 'eq_weight' in disp.columns:  disp['eq_weight']  = disp['eq_weight']  * 100.0
-            if 'q75_weight' in disp.columns: disp['q75_weight'] = disp['q75_weight'] * 100.0
-            cols_show = [c for c in ['Ticker','score','eq_weight','q75','q75_weight'] if c in disp.columns]
+            if 'eq_weight' in disp.columns:
+                disp['eq_weight']  = disp['eq_weight']  * 100.0
+            cols_show = [c for c in ['Ticker','score','eq_weight'] if c in disp.columns]
             st.dataframe(
                 disp[cols_show], hide_index=True, use_container_width=True,
                 key=f"lm_holdings_{key_suffix}",
                 column_config={
-                    'score':      st.column_config.NumberColumn('Score',     format='%.5f'),
-                    'eq_weight':  st.column_config.ProgressColumn('EqWt',    format='%.1f%%', min_value=0.0, max_value=100.0),
-                    'q75':        st.column_config.NumberColumn('Q75 score', format='%.5f'),
-                    'q75_weight': st.column_config.ProgressColumn('Q75 wt',  format='%.1f%%', min_value=0.0, max_value=100.0),
+                    'score':      st.column_config.NumberColumn('Score',  format='%.5f'),
+                    'eq_weight':  st.column_config.ProgressColumn('Weight (EqWt)', format='%.1f%%', min_value=0.0, max_value=100.0),
                 },
             )
-            if 'q75_weight' in df.columns:
-                total_q75 = df['q75_weight'].sum() * 100.0
-                st.caption(f"Σ Q75 weights = **{total_q75:.1f}%**")
 
     # Side-by-side: tr_price7f (primary) | 26f (control)
     hcol_7f, hcol_26 = st.columns(2)
@@ -1349,19 +1343,19 @@ with tab_lm:
             "fallback only and is **not** current `tr_price7f` holdings."
         )
 
-    # ── 3. Backtest Performance (UNIV_FULL / TOPK_5 / RB_5) ──────────────
+    # ── 3. Backtest Performance (UNIV_FULL / TOPK_5 / RB_5, EqWt) ────────
     st.markdown("---")
     st.subheader("Backtest Performance — default setup")
-    st.caption("UNIV_FULL · TOPK_5 · RB_5 · `shares_cash` engine · alpha vs VNINDEX")
+    st.caption("UNIV_FULL · TOPK_5 · RB_5 · `shares_cash` engine · EqWt · alpha vs VNINDEX")
 
     if rob_7f is not None and rob_26 is not None:
-        def _row(df, scenario, config, schema):
-            sub = df[(df['scenario'] == scenario) & (df['config'] == config)]
+        def _row(df, scenario, schema):
+            sub = df[(df['scenario'] == scenario) & (df['config'] == 'EqWt')]
             if len(sub) == 0:
                 return None
             r = sub.iloc[0]
             return {
-                'Schema': schema, 'Config': config,
+                'Schema': schema,
                 'Cum return':  r['cum'] * 100.0,
                 'Sharpe':      float(r['sharpe']),
                 'Max DD':      r['mdd'] * 100.0,
@@ -1370,10 +1364,9 @@ with tab_lm:
             }
         perf_rows = []
         for schema_df, schema_name in [(rob_26, '26f'), (rob_7f, 'tr_price7f')]:
-            for cfg in ['EqWt', 'Q75']:
-                row = _row(schema_df, 'TOPK_5', cfg, schema_name)
-                if row:
-                    perf_rows.append(row)
+            row = _row(schema_df, 'TOPK_5', schema_name)
+            if row:
+                perf_rows.append(row)
         if perf_rows:
             perf_df = pd.DataFrame(perf_rows)
             st.dataframe(
@@ -1387,23 +1380,18 @@ with tab_lm:
                 },
             )
             st.caption(
-                "**Read:** `tr_price7f Q75` has the best Sharpe (0.892) and least negative drawdown (-34.5%) "
-                "of the main setups. `26f EqWt` slightly beats `tr_price7f EqWt` on return but loses on drawdown. "
-                "Sizing matters: `tr_price7f` benefits most from Q75."
+                "**Read:** `26f` slightly beats `tr_price7f` on cumulative return (+194.1% vs +159.0%), "
+                "and they have similar max drawdown (-51.6% vs -48.3%) and Sharpe (0.720 vs 0.688). "
+                "Both schemas comfortably beat VNINDEX over the test window (+132% to +167% alpha)."
             )
 
-    # ── 4. Yearly Performance ────────────────────────────────────────────
+    # ── 4. Yearly Performance (EqWt only) ────────────────────────────────
     st.markdown("---")
-    st.subheader("Yearly Performance (5-seed multiseed mean)")
-
-    sizing_choice = st.radio(
-        "Sizing", ["Q75", "EqWt"], horizontal=True, key="lm_year_sizing",
-        help="Q75 = LightGBM quantile sizing within the same top-5 picks; EqWt = equal weight",
-    )
+    st.subheader("Yearly Performance (5-seed multiseed mean, EqWt)")
 
     if yr_7f is not None and yr_26 is not None:
-        y7 = yr_7f[yr_7f['config'] == sizing_choice][['year','strategy_return_mean','alpha_mean']]
-        y26 = yr_26[yr_26['config'] == sizing_choice][['year','strategy_return_mean','alpha_mean']]
+        y7  = yr_7f[yr_7f['config']   == 'EqWt'][['year','strategy_return_mean','alpha_mean']]
+        y26 = yr_26[yr_26['config']   == 'EqWt'][['year','strategy_return_mean','alpha_mean']]
         y7  = y7.rename(columns={'strategy_return_mean':'tr_price7f Return', 'alpha_mean':'tr_price7f Alpha'})
         y26 = y26.rename(columns={'strategy_return_mean':'26f Return',       'alpha_mean':'26f Alpha'})
         ydf = y26.merge(y7, on='year').sort_values('year').reset_index(drop=True)
@@ -1415,31 +1403,31 @@ with tab_lm:
             fig_r.add_trace(go.Bar(name='26f',         x=ydf['year'].astype(str), y=ydf['26f Return']         * 100, marker_color='#3498db'))
             fig_r.add_trace(go.Bar(name='tr_price7f',  x=ydf['year'].astype(str), y=ydf['tr_price7f Return']  * 100, marker_color='#e67e22'))
             fig_r.update_layout(
-                title=f"<b>Strategy Return ({sizing_choice})</b>",
+                title="<b>Strategy Return</b>",
                 barmode='group', height=340, yaxis_title='% return',
                 margin=dict(l=10, r=10, t=44, b=24), plot_bgcolor='#fafbfc',
                 font=dict(family='DM Sans'),
             )
-            st.plotly_chart(fig_r, use_container_width=True, config={'displayModeBar': False}, key=f"lm_year_ret_{sizing_choice}")
+            st.plotly_chart(fig_r, use_container_width=True, config={'displayModeBar': False}, key="lm_year_ret")
         with col_a:
             fig_a = go.Figure()
             fig_a.add_trace(go.Bar(name='26f',         x=ydf['year'].astype(str), y=ydf['26f Alpha']         * 100, marker_color='#3498db'))
             fig_a.add_trace(go.Bar(name='tr_price7f',  x=ydf['year'].astype(str), y=ydf['tr_price7f Alpha']  * 100, marker_color='#e67e22'))
             fig_a.update_layout(
-                title=f"<b>Alpha vs VNINDEX ({sizing_choice})</b>",
+                title="<b>Alpha vs VNINDEX</b>",
                 barmode='group', height=340, yaxis_title='% alpha',
                 margin=dict(l=10, r=10, t=44, b=24), plot_bgcolor='#fafbfc',
                 font=dict(family='DM Sans'),
             )
             fig_a.add_hline(y=0, line=dict(color='#888', width=1, dash='dot'))
-            st.plotly_chart(fig_a, use_container_width=True, config={'displayModeBar': False}, key=f"lm_year_alpha_{sizing_choice}")
+            st.plotly_chart(fig_a, use_container_width=True, config={'displayModeBar': False}, key="lm_year_alpha")
 
         # Pre-scale to percent before display
         ydisp = ydf.copy()
         for col in ['26f Return','26f Alpha','tr_price7f Return','tr_price7f Alpha']:
             ydisp[col] = ydisp[col] * 100.0
         st.dataframe(
-            ydisp, hide_index=True, use_container_width=True, key=f"lm_year_table_{sizing_choice}",
+            ydisp, hide_index=True, use_container_width=True, key="lm_year_table",
             column_config={
                 'year':              st.column_config.NumberColumn('Year', format='%d'),
                 '26f Return':        st.column_config.NumberColumn(format='%+.1f%%'),
@@ -1450,16 +1438,16 @@ with tab_lm:
         )
         st.caption("**2026 YTD is partial year** — interpret accordingly.")
 
-    # ── 5. Robustness Test ───────────────────────────────────────────────
+    # ── 5. Robustness Test (EqWt) ───────────────────────────────────────
     st.markdown("---")
-    st.subheader("Robustness Test — Q75 by scenario")
+    st.subheader("Robustness Test — EqWt by scenario")
 
     if rob_7f is not None and rob_26 is not None:
         scenarios = ['TOPK_3','TOPK_5','TOPK_10','RB_10','UNIV_TOP90','UNIV_TOP70']
         rob_rows = []
         for sc in scenarios:
-            r7 = rob_7f[(rob_7f['scenario'] == sc) & (rob_7f['config'] == 'Q75')]
-            r26 = rob_26[(rob_26['scenario'] == sc) & (rob_26['config'] == 'Q75')]
+            r7 = rob_7f[(rob_7f['scenario'] == sc) & (rob_7f['config'] == 'EqWt')]
+            r26 = rob_26[(rob_26['scenario'] == sc) & (rob_26['config'] == 'EqWt')]
             if len(r7) == 0 or len(r26) == 0:
                 continue
             r7, r26 = r7.iloc[0], r26.iloc[0]
@@ -1486,33 +1474,31 @@ with tab_lm:
                 },
             )
             st.caption(
-                "**Robustness verdict:** `tr_price7f` is much stronger under **universe reduction** "
-                "(`UNIV_TOP90`/`UNIV_TOP70`), where `26f` collapses. `26f` remains competitive in wider/slower "
-                "variants (`TOPK_10`, `RB_10`). For concentrated faster operating regime, `tr_price7f` wins."
+                "**Robustness read:** results vary materially across scenarios. Both schemas remain "
+                "positive in concentrated faster setups (`TOPK_3/5`) and degrade in wider/slower variants. "
+                "Universe-reduction (`UNIV_TOP90/70`) stresses both — interpret these as floor conditions."
             )
 
-    # ── 6. Multiseed Sensitivity ────────────────────────────────────────
+    # ── 6. Multiseed Sensitivity (EqWt) ─────────────────────────────────
     st.markdown("---")
-    st.subheader("Multiseed Sensitivity (5 seeds)")
+    st.subheader("Multiseed Sensitivity (5 seeds, EqWt)")
 
     if ms_7f is not None and ms_26 is not None:
         ms_rows = []
-        for cfg in ['EqWt', 'Q75']:
-            for schema_df, schema_name in [(ms_26, '26f'), (ms_7f, 'tr_price7f')]:
-                sub = schema_df[schema_df['config'] == cfg]
-                if len(sub) == 0:
-                    continue
-                r = sub.iloc[0]
-                ms_rows.append({
-                    'Schema':           schema_name,
-                    'Config':           cfg,
-                    'Cum mean':         r['cum_mean']         * 100.0,
-                    'Cum std':          r['cum_std']          * 100.0,
-                    'Sharpe mean':      float(r['sharpe_mean']),
-                    'Sharpe std':       float(r['sharpe_std']),
-                    'MDD mean':         r['mdd_mean']         * 100.0,
-                    'Beat years mean':  float(r['beat_years_mean']),
-                })
+        for schema_df, schema_name in [(ms_26, '26f'), (ms_7f, 'tr_price7f')]:
+            sub = schema_df[schema_df['config'] == 'EqWt']
+            if len(sub) == 0:
+                continue
+            r = sub.iloc[0]
+            ms_rows.append({
+                'Schema':           schema_name,
+                'Cum mean':         r['cum_mean']         * 100.0,
+                'Cum std':          r['cum_std']          * 100.0,
+                'Sharpe mean':      float(r['sharpe_mean']),
+                'Sharpe std':       float(r['sharpe_std']),
+                'MDD mean':         r['mdd_mean']         * 100.0,
+                'Beat years mean':  float(r['beat_years_mean']),
+            })
         if ms_rows:
             ms_df = pd.DataFrame(ms_rows)
             st.dataframe(
@@ -1527,9 +1513,9 @@ with tab_lm:
                 },
             )
             st.caption(
-                "**Multiseed read:** `tr_price7f Q75` has the best mean Sharpe (0.700) AND lowest variance "
-                "(Sharpe std 0.039, Cum std 13.9%). `26f` has higher mean returns but much higher seed variance "
-                "(Cum std 52.9% / 45.0%). `tr_price7f` is more *trustworthy* even if not strictly higher in mean."
+                "**Multiseed read:** `26f` has higher mean cumulative return (+161.3%) but much higher seed "
+                "variance (Cum std 52.9% vs 14.4%). `tr_price7f` is more *stable* across random seeds even if "
+                "the headline is lower — useful for assessing live-trading reliability."
             )
 
     # ── 7. Big Picture / Methodology ────────────────────────────────────
@@ -1557,14 +1543,14 @@ with tab_lm:
             "**Feature schemas**  \n"
             "- `26f` — rich technical-analysis baseline (DMI, BBWP, ULT_RSI, …)\n"
             "- `tr_price7f` — simpler raw-price decomposition (overnight, intraday, range)\n\n"
-            "The lesson: the simpler **`tr_price7f` generalizes better** for the Q75 top-5 portfolio, "
-            "though `26f` can be stronger in EqWt or wider configurations."
+            "Both schemas use **equal-weighted top-5** portfolios in the figures above. "
+            "`26f` tends to win on raw returns; `tr_price7f` is more stable across seeds."
         )
         st.markdown(
-            "**Sizing**  \n"
-            "- `EqWt` — every selected stock gets equal target weight (20% × 5)\n"
-            "- `Q75` — selected stocks sized by a separate LightGBM quantile model estimating upside. "
-            "Q75 changes weights among the **same** top-5 picks; it is not the ranking model itself."
+            "**Why this matters**  \n"
+            "Cross-sectional ranking models like LambdaMART can extract alpha from daily security relative-ordering. "
+            "But success depends on the operating regime (universe size, rebalance speed, portfolio width). "
+            "The tables above stress-test the model across those dimensions."
         )
 
     # ── 8. Final Conclusion box ─────────────────────────────────────────
@@ -1574,10 +1560,11 @@ with tab_lm:
         "border-radius:10px; font-size:14px; line-height:1.8;'>"
         "<div style='font-size:13px; font-weight:700; color:#b9770e; letter-spacing:1px; margin-bottom:6px;'>"
         "FINAL CONCLUSION</div>"
-        "<b>Use <code>tr_price7f + Q75</code> as the leading LambdaMART research branch.</b> "
-        "Keep <code>26f</code> as the baseline/control.<br><br>"
+        "<b>Both <code>26f</code> and <code>tr_price7f</code> beat VNINDEX over the test window</b> "
+        "(+132% to +167% alpha, EqWt). <code>26f</code> wins on headline returns; "
+        "<code>tr_price7f</code> wins on seed stability and universe robustness.<br><br>"
         "<b>Do not treat this as production-ready.</b> 2026 YTD alpha is negative for both schemas. "
-        "Drawdowns are still large (-34% to -50% across scenarios). Performance weakens at slower rebalancing "
+        "Drawdowns are still large (-48% to -52% in default setup). Performance weakens at slower rebalancing "
         "and in wider books. The edge is regime-dependent. Live paper trading, stricter transaction-cost "
         "modeling, capacity checks, and repeated audit-harness validation are required before any deployment."
         "</div>",
