@@ -399,11 +399,12 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-tab_summary, tab_dash, tab_feat, tab_imp = st.tabs([
+tab_summary, tab_dash, tab_feat, tab_imp, tab_lm = st.tabs([
     "Summary",
     "Dashboard",
     f"Features ({len(FEATURE_CATALOG)})",
     "Feature Importance",
+    "LambdaMART",
 ])
 
 # ─────────────────────────────── Tab 0: Summary ─────────────────────────────
@@ -1165,6 +1166,423 @@ with tab_imp:
             "Click any column header to sort. "
             "η² verified 8/8 · RF bit-exact · SHAP additivity 2.4e-06 · Wass 10/10."
         )
+
+# ─────────────────────────────── Tab 4: LambdaMART ──────────────────────────
+
+LM_DIR = os.path.join(ROOT, 'lambdamart')
+
+
+def _fmt_pct(x, decimals=1):
+    if x is None or (isinstance(x, float) and (np.isnan(x) or not np.isfinite(x))):
+        return "—"
+    return f"{x * 100:+.{decimals}f}%"
+
+
+def _fmt_sharpe(x):
+    if x is None or (isinstance(x, float) and (np.isnan(x) or not np.isfinite(x))):
+        return "—"
+    return f"{x:.3f}"
+
+
+def _fmt_mdd(x):
+    if x is None or (isinstance(x, float) and (np.isnan(x) or not np.isfinite(x))):
+        return "—"
+    return f"{x * 100:.1f}%"
+
+
+@st.cache_data
+def _load_lm_csv(filename, _mtime_key):
+    path = os.path.join(LM_DIR, filename)
+    return pd.read_csv(path) if os.path.exists(path) else None
+
+
+_lm_mtime = tuple(int(os.path.getmtime(os.path.join(LM_DIR, f)))
+                  for f in os.listdir(LM_DIR) if os.path.exists(os.path.join(LM_DIR, f))) if os.path.exists(LM_DIR) else ()
+
+with tab_lm:
+    st.title("LambdaMART Research")
+    st.markdown(
+        "<div style='display:flex; gap:10px; margin-top:-6px; margin-bottom:8px; align-items:center;'>"
+        "<span style='color:#666; font-size:13px;'>XGBoost <code>rank:ndcg</code> · "
+        "Walk-forward · <code>shares_cash</code> backtest engine</span>"
+        "<span style='display:inline-block; padding:3px 10px; background:#27ae60; color:#fff; "
+        "font-size:11px; font-weight:700; border-radius:12px; letter-spacing:0.5px;'>"
+        "DATA THROUGH 2026-05-12</span></div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── 1. Header / Status cards ─────────────────────────────────────────
+    rob_7f = _load_lm_csv('lambdamart_tr_price7f_robustness_shares_cash_summary.csv', _lm_mtime)
+    rob_26 = _load_lm_csv('lambdamart_26f_robustness_shares_cash_summary.csv',       _lm_mtime)
+    ms_7f  = _load_lm_csv('lambdamart_tr_price7f_multiseed_full_shares_cash_summary.csv', _lm_mtime)
+    ms_26  = _load_lm_csv('lambdamart_26f_multiseed_full_shares_cash_summary.csv',       _lm_mtime)
+    yr_7f  = _load_lm_csv('lambdamart_tr_price7f_multiseed_full_shares_cash_yearly.csv', _lm_mtime)
+    yr_26  = _load_lm_csv('lambdamart_26f_multiseed_full_shares_cash_yearly.csv',       _lm_mtime)
+    holdings_legacy = _load_lm_csv('lambdamart_26f_frozen_latest_portfolio.csv',         _lm_mtime)
+
+    # Headline metrics for tr_price7f Q75 (UNIV_FULL, TOPK_5, RB_5)
+    if rob_7f is not None:
+        headline = rob_7f[(rob_7f['scenario'] == 'TOPK_5') & (rob_7f['config'] == 'Q75')]
+        if len(headline) == 0:
+            headline = rob_7f[rob_7f['config'] == 'Q75'].head(1)
+        h = headline.iloc[0] if len(headline) else None
+    else:
+        h = None
+    if ms_7f is not None:
+        ms7q = ms_7f[ms_7f['config'] == 'Q75']
+        ms7q_row = ms7q.iloc[0] if len(ms7q) else None
+    else:
+        ms7q_row = None
+
+    c1, c2, c3, c4 = st.columns(4)
+    if h is not None:
+        c1.metric("tr_price7f Q75 · Cum return", _fmt_pct(h['cum']), help="UNIV_FULL · TOPK_5 · RB_5 · shares_cash")
+        c2.metric("Sharpe",                       _fmt_sharpe(h['sharpe']))
+        c3.metric("Max drawdown",                 _fmt_mdd(h['mdd']))
+    if ms7q_row is not None:
+        c4.metric("Multiseed Cum std",            _fmt_pct(ms7q_row['cum_std']), help="5-seed std under shares_cash")
+
+    # Decision summary
+    st.markdown(
+        "<div style='padding:14px 18px; margin-top:10px; background:#f0f7fb; "
+        "border-left:5px solid #3498db; border-radius:8px; font-size:13px; line-height:1.7;'>"
+        "<b>Decision:</b> <code>tr_price7f + Q75</code> is the current leading research candidate. "
+        "<code>26f</code> remains the baseline/control. "
+        "<span style='display:inline-block; margin-left:6px; padding:2px 8px; background:#f39c12; "
+        "color:#fff; font-size:11px; font-weight:700; border-radius:10px;'>RESEARCH ONLY</span>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.warning("**2026 YTD alpha is negative** for both schemas. This remains a research candidate, "
+               "not a production trading signal. Live paper trading, slippage modelling, and capacity "
+               "checks are required before any deployment.")
+
+    # ── 2. Latest Holdings (both 7f and 26f side-by-side) ────────────────
+    st.markdown("---")
+    st.subheader("Latest Holdings — tr_price7f & 26f")
+
+    holdings_7f     = _load_lm_csv('lambdamart_tr_price7f_latest_portfolio.csv', _lm_mtime)
+    holdings_26f    = _load_lm_csv('lambdamart_26f_latest_portfolio.csv',         _lm_mtime)
+
+    def _render_holdings(col, df, schema_name, key_suffix, is_legacy=False):
+        with col:
+            label_color = '#e67e22' if schema_name == 'tr_price7f' else '#3498db'
+            badge = (
+                f"<span style='display:inline-block; padding:2px 10px; background:{label_color}; "
+                f"color:#fff; font-size:11px; font-weight:700; border-radius:10px; letter-spacing:1px;'>"
+                f"{schema_name.upper()}</span>"
+            )
+            if df is None:
+                st.markdown(badge + "<span style='margin-left:8px; color:#666;'>holdings file not generated</span>",
+                            unsafe_allow_html=True)
+                st.warning(
+                    f"`lambdamart_{schema_name.replace('tr_price','tr_price')}_latest_portfolio.csv` not found. "
+                    f"Generate it via `build_latest_portfolio()` in `lambdamart_26f_utils.py` "
+                    f"or `run_lambdamart_26f_frozen_monitor.py` (adapted for `{schema_name}` schema)."
+                )
+                return
+            portfolio_date = df['portfolio_date'].iloc[0] if 'portfolio_date' in df.columns else df['Date'].iloc[0]
+            stale_warn = ""
+            try:
+                pd_date = pd.Timestamp(portfolio_date).date()
+                if pd_date < pd.Timestamp('2026-05-12').date():
+                    days_stale = (pd.Timestamp('2026-05-12').date() - pd_date).days
+                    stale_warn = (
+                        f"<span style='display:inline-block; margin-left:8px; padding:2px 8px; "
+                        f"background:#f39c12; color:#fff; font-size:10px; font-weight:700; border-radius:8px;'>"
+                        f"STALE BY {days_stale}d</span>"
+                    )
+            except Exception:
+                pass
+            legacy_tag = (
+                "<span style='display:inline-block; margin-left:8px; padding:2px 8px; "
+                "background:#95a5a6; color:#fff; font-size:10px; font-weight:700; border-radius:8px;'>"
+                "LEGACY FALLBACK</span>"
+            ) if is_legacy else ""
+            st.markdown(
+                f"{badge}{stale_warn}{legacy_tag}"
+                f"<span style='margin-left:10px; color:#666; font-size:12px;'>"
+                f"portfolio_date = <code>{portfolio_date}</code></span>",
+                unsafe_allow_html=True,
+            )
+            disp = df.copy()
+            if 'eq_weight' in disp.columns:  disp['eq_weight']  = disp['eq_weight']  * 100.0
+            if 'q75_weight' in disp.columns: disp['q75_weight'] = disp['q75_weight'] * 100.0
+            cols_show = [c for c in ['Ticker','score','eq_weight','q75','q75_weight'] if c in disp.columns]
+            st.dataframe(
+                disp[cols_show], hide_index=True, use_container_width=True,
+                key=f"lm_holdings_{key_suffix}",
+                column_config={
+                    'score':      st.column_config.NumberColumn('Score',     format='%.5f'),
+                    'eq_weight':  st.column_config.ProgressColumn('EqWt',    format='%.1f%%', min_value=0.0, max_value=100.0),
+                    'q75':        st.column_config.NumberColumn('Q75 score', format='%.5f'),
+                    'q75_weight': st.column_config.ProgressColumn('Q75 wt',  format='%.1f%%', min_value=0.0, max_value=100.0),
+                },
+            )
+            if 'q75_weight' in df.columns:
+                total_q75 = df['q75_weight'].sum() * 100.0
+                st.caption(f"Σ Q75 weights = **{total_q75:.1f}%**")
+
+    # Side-by-side: tr_price7f (primary) | 26f (control)
+    hcol_7f, hcol_26 = st.columns(2)
+
+    # tr_price7f: must come from `lambdamart_tr_price7f_latest_portfolio.csv`
+    _render_holdings(hcol_7f, holdings_7f, 'tr_price7f', '7f', is_legacy=False)
+
+    # 26f: prefer `lambdamart_26f_latest_portfolio.csv`; fall back to legacy frozen monitor
+    if holdings_26f is not None:
+        _render_holdings(hcol_26, holdings_26f, '26f', '26f', is_legacy=False)
+    else:
+        with hcol_26:
+            st.warning("`lambdamart_26f_latest_portfolio.csv` not generated. Showing **legacy "
+                       "frozen monitor** (`lambdamart_26f_frozen_latest_portfolio.csv`) as fallback.")
+        _render_holdings(hcol_26, holdings_legacy, '26f', '26f_legacy', is_legacy=True)
+
+    # Global note
+    if holdings_7f is None or holdings_26f is None:
+        st.info(
+            "**Holdings status:** at least one of the canonical holdings CSVs is missing. "
+            "Regenerate both `lambdamart_tr_price7f_latest_portfolio.csv` and "
+            "`lambdamart_26f_latest_portfolio.csv` (date = 2026-05-12) before presenting live names. "
+            "The legacy `lambdamart_26f_frozen_latest_portfolio.csv` (2026-04-17) is shown as a "
+            "fallback only and is **not** current `tr_price7f` holdings."
+        )
+
+    # ── 3. Backtest Performance (UNIV_FULL / TOPK_5 / RB_5) ──────────────
+    st.markdown("---")
+    st.subheader("Backtest Performance — default setup")
+    st.caption("UNIV_FULL · TOPK_5 · RB_5 · `shares_cash` engine · alpha vs VNINDEX")
+
+    if rob_7f is not None and rob_26 is not None:
+        def _row(df, scenario, config, schema):
+            sub = df[(df['scenario'] == scenario) & (df['config'] == config)]
+            if len(sub) == 0:
+                return None
+            r = sub.iloc[0]
+            return {
+                'Schema': schema, 'Config': config,
+                'Cum return':  r['cum'] * 100.0,
+                'Sharpe':      float(r['sharpe']),
+                'Max DD':      r['mdd'] * 100.0,
+                'Alpha total': r['alpha_total'] * 100.0,
+                'Beat years':  int(r['beat_years']),
+            }
+        perf_rows = []
+        for schema_df, schema_name in [(rob_26, '26f'), (rob_7f, 'tr_price7f')]:
+            for cfg in ['EqWt', 'Q75']:
+                row = _row(schema_df, 'TOPK_5', cfg, schema_name)
+                if row:
+                    perf_rows.append(row)
+        if perf_rows:
+            perf_df = pd.DataFrame(perf_rows)
+            st.dataframe(
+                perf_df, hide_index=True, use_container_width=True, key="lm_perf_main",
+                column_config={
+                    'Cum return':  st.column_config.NumberColumn(format='%+.1f%%'),
+                    'Sharpe':      st.column_config.NumberColumn(format='%.3f'),
+                    'Max DD':      st.column_config.NumberColumn(format='%.1f%%'),
+                    'Alpha total': st.column_config.NumberColumn(format='%+.1f%%'),
+                    'Beat years':  st.column_config.NumberColumn(format='%d'),
+                },
+            )
+            st.caption(
+                "**Read:** `tr_price7f Q75` has the best Sharpe (0.892) and least negative drawdown (-34.5%) "
+                "of the main setups. `26f EqWt` slightly beats `tr_price7f EqWt` on return but loses on drawdown. "
+                "Sizing matters: `tr_price7f` benefits most from Q75."
+            )
+
+    # ── 4. Yearly Performance ────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("Yearly Performance (5-seed multiseed mean)")
+
+    sizing_choice = st.radio(
+        "Sizing", ["Q75", "EqWt"], horizontal=True, key="lm_year_sizing",
+        help="Q75 = LightGBM quantile sizing within the same top-5 picks; EqWt = equal weight",
+    )
+
+    if yr_7f is not None and yr_26 is not None:
+        y7 = yr_7f[yr_7f['config'] == sizing_choice][['year','strategy_return_mean','alpha_mean']]
+        y26 = yr_26[yr_26['config'] == sizing_choice][['year','strategy_return_mean','alpha_mean']]
+        y7  = y7.rename(columns={'strategy_return_mean':'tr_price7f Return', 'alpha_mean':'tr_price7f Alpha'})
+        y26 = y26.rename(columns={'strategy_return_mean':'26f Return',       'alpha_mean':'26f Alpha'})
+        ydf = y26.merge(y7, on='year').sort_values('year').reset_index(drop=True)
+
+        # Grouped bar charts: Return then Alpha
+        col_r, col_a = st.columns(2)
+        with col_r:
+            fig_r = go.Figure()
+            fig_r.add_trace(go.Bar(name='26f',         x=ydf['year'].astype(str), y=ydf['26f Return']         * 100, marker_color='#3498db'))
+            fig_r.add_trace(go.Bar(name='tr_price7f',  x=ydf['year'].astype(str), y=ydf['tr_price7f Return']  * 100, marker_color='#e67e22'))
+            fig_r.update_layout(
+                title=f"<b>Strategy Return ({sizing_choice})</b>",
+                barmode='group', height=340, yaxis_title='% return',
+                margin=dict(l=10, r=10, t=44, b=24), plot_bgcolor='#fafbfc',
+                font=dict(family='DM Sans'),
+            )
+            st.plotly_chart(fig_r, use_container_width=True, config={'displayModeBar': False}, key=f"lm_year_ret_{sizing_choice}")
+        with col_a:
+            fig_a = go.Figure()
+            fig_a.add_trace(go.Bar(name='26f',         x=ydf['year'].astype(str), y=ydf['26f Alpha']         * 100, marker_color='#3498db'))
+            fig_a.add_trace(go.Bar(name='tr_price7f',  x=ydf['year'].astype(str), y=ydf['tr_price7f Alpha']  * 100, marker_color='#e67e22'))
+            fig_a.update_layout(
+                title=f"<b>Alpha vs VNINDEX ({sizing_choice})</b>",
+                barmode='group', height=340, yaxis_title='% alpha',
+                margin=dict(l=10, r=10, t=44, b=24), plot_bgcolor='#fafbfc',
+                font=dict(family='DM Sans'),
+            )
+            fig_a.add_hline(y=0, line=dict(color='#888', width=1, dash='dot'))
+            st.plotly_chart(fig_a, use_container_width=True, config={'displayModeBar': False}, key=f"lm_year_alpha_{sizing_choice}")
+
+        # Pre-scale to percent before display
+        ydisp = ydf.copy()
+        for col in ['26f Return','26f Alpha','tr_price7f Return','tr_price7f Alpha']:
+            ydisp[col] = ydisp[col] * 100.0
+        st.dataframe(
+            ydisp, hide_index=True, use_container_width=True, key=f"lm_year_table_{sizing_choice}",
+            column_config={
+                'year':              st.column_config.NumberColumn('Year', format='%d'),
+                '26f Return':        st.column_config.NumberColumn(format='%+.1f%%'),
+                '26f Alpha':         st.column_config.NumberColumn(format='%+.1f%%'),
+                'tr_price7f Return': st.column_config.NumberColumn(format='%+.1f%%'),
+                'tr_price7f Alpha':  st.column_config.NumberColumn(format='%+.1f%%'),
+            },
+        )
+        st.caption("**2026 YTD is partial year** — interpret accordingly.")
+
+    # ── 5. Robustness Test ───────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("Robustness Test — Q75 by scenario")
+
+    if rob_7f is not None and rob_26 is not None:
+        scenarios = ['TOPK_3','TOPK_5','TOPK_10','RB_10','UNIV_TOP90','UNIV_TOP70']
+        rob_rows = []
+        for sc in scenarios:
+            r7 = rob_7f[(rob_7f['scenario'] == sc) & (rob_7f['config'] == 'Q75')]
+            r26 = rob_26[(rob_26['scenario'] == sc) & (rob_26['config'] == 'Q75')]
+            if len(r7) == 0 or len(r26) == 0:
+                continue
+            r7, r26 = r7.iloc[0], r26.iloc[0]
+            rob_rows.append({
+                'Scenario':       sc,
+                'tr_price7f Cum':    r7['cum']  * 100.0,
+                'tr_price7f Sharpe': float(r7['sharpe']),
+                'tr_price7f MDD':    r7['mdd']  * 100.0,
+                '26f Cum':           r26['cum'] * 100.0,
+                '26f Sharpe':        float(r26['sharpe']),
+                '26f MDD':           r26['mdd'] * 100.0,
+            })
+        if rob_rows:
+            rdf = pd.DataFrame(rob_rows)
+            st.dataframe(
+                rdf, hide_index=True, use_container_width=True, key="lm_robust",
+                column_config={
+                    'tr_price7f Cum':    st.column_config.NumberColumn(format='%+.1f%%'),
+                    'tr_price7f Sharpe': st.column_config.NumberColumn(format='%.3f'),
+                    'tr_price7f MDD':    st.column_config.NumberColumn(format='%.1f%%'),
+                    '26f Cum':           st.column_config.NumberColumn(format='%+.1f%%'),
+                    '26f Sharpe':        st.column_config.NumberColumn(format='%.3f'),
+                    '26f MDD':           st.column_config.NumberColumn(format='%.1f%%'),
+                },
+            )
+            st.caption(
+                "**Robustness verdict:** `tr_price7f` is much stronger under **universe reduction** "
+                "(`UNIV_TOP90`/`UNIV_TOP70`), where `26f` collapses. `26f` remains competitive in wider/slower "
+                "variants (`TOPK_10`, `RB_10`). For concentrated faster operating regime, `tr_price7f` wins."
+            )
+
+    # ── 6. Multiseed Sensitivity ────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("Multiseed Sensitivity (5 seeds)")
+
+    if ms_7f is not None and ms_26 is not None:
+        ms_rows = []
+        for cfg in ['EqWt', 'Q75']:
+            for schema_df, schema_name in [(ms_26, '26f'), (ms_7f, 'tr_price7f')]:
+                sub = schema_df[schema_df['config'] == cfg]
+                if len(sub) == 0:
+                    continue
+                r = sub.iloc[0]
+                ms_rows.append({
+                    'Schema':           schema_name,
+                    'Config':           cfg,
+                    'Cum mean':         r['cum_mean']         * 100.0,
+                    'Cum std':          r['cum_std']          * 100.0,
+                    'Sharpe mean':      float(r['sharpe_mean']),
+                    'Sharpe std':       float(r['sharpe_std']),
+                    'MDD mean':         r['mdd_mean']         * 100.0,
+                    'Beat years mean':  float(r['beat_years_mean']),
+                })
+        if ms_rows:
+            ms_df = pd.DataFrame(ms_rows)
+            st.dataframe(
+                ms_df, hide_index=True, use_container_width=True, key="lm_multiseed",
+                column_config={
+                    'Cum mean':        st.column_config.NumberColumn(format='%+.1f%%'),
+                    'Cum std':         st.column_config.NumberColumn(format='%.1f%%'),
+                    'Sharpe mean':     st.column_config.NumberColumn(format='%.3f'),
+                    'Sharpe std':      st.column_config.NumberColumn(format='%.3f'),
+                    'MDD mean':        st.column_config.NumberColumn(format='%.1f%%'),
+                    'Beat years mean': st.column_config.NumberColumn(format='%.1f'),
+                },
+            )
+            st.caption(
+                "**Multiseed read:** `tr_price7f Q75` has the best mean Sharpe (0.700) AND lowest variance "
+                "(Sharpe std 0.039, Cum std 13.9%). `26f` has higher mean returns but much higher seed variance "
+                "(Cum std 52.9% / 45.0%). `tr_price7f` is more *trustworthy* even if not strictly higher in mean."
+            )
+
+    # ── 7. Big Picture / Methodology ────────────────────────────────────
+    st.markdown("---")
+    st.subheader("Methodology")
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown(
+            "**Model**  \n"
+            "LambdaMART is a **cross-sectional stock-ranking** model. Each trading date is one ranking query. "
+            "The model ranks eligible stocks by expected forward return; we select the top 5 and convert that "
+            "ranking into a long-only portfolio.\n\n"
+            "Trained with **XGBoost `rank:ndcg`** (a LambdaMART/LambdaRank objective). Labels are **top-heavy "
+            "forward-return grades**, not simple regression targets."
+        )
+        st.markdown(
+            "**Backtest**  \n"
+            "Walk-forward protocol governs training/test over time. The **`shares_cash` engine** governs "
+            "execution and accounting — tracking shares, cash, open-price execution, transaction fees, "
+            "forced holds, and weight drift. Final reported results combine both."
+        )
+    with col_b:
+        st.markdown(
+            "**Feature schemas**  \n"
+            "- `26f` — rich technical-analysis baseline (DMI, BBWP, ULT_RSI, …)\n"
+            "- `tr_price7f` — simpler raw-price decomposition (overnight, intraday, range)\n\n"
+            "The lesson: the simpler **`tr_price7f` generalizes better** for the Q75 top-5 portfolio, "
+            "though `26f` can be stronger in EqWt or wider configurations."
+        )
+        st.markdown(
+            "**Sizing**  \n"
+            "- `EqWt` — every selected stock gets equal target weight (20% × 5)\n"
+            "- `Q75` — selected stocks sized by a separate LightGBM quantile model estimating upside. "
+            "Q75 changes weights among the **same** top-5 picks; it is not the ranking model itself."
+        )
+
+    # ── 8. Final Conclusion box ─────────────────────────────────────────
+    st.markdown("---")
+    st.markdown(
+        "<div style='padding:18px 22px; background:#fff8e1; border:2px solid #f39c12; "
+        "border-radius:10px; font-size:14px; line-height:1.8;'>"
+        "<div style='font-size:13px; font-weight:700; color:#b9770e; letter-spacing:1px; margin-bottom:6px;'>"
+        "FINAL CONCLUSION</div>"
+        "<b>Use <code>tr_price7f + Q75</code> as the leading LambdaMART research branch.</b> "
+        "Keep <code>26f</code> as the baseline/control.<br><br>"
+        "<b>Do not treat this as production-ready.</b> 2026 YTD alpha is negative for both schemas. "
+        "Drawdowns are still large (-34% to -50% across scenarios). Performance weakens at slower rebalancing "
+        "and in wider books. The edge is regime-dependent. Live paper trading, stricter transaction-cost "
+        "modeling, capacity checks, and repeated audit-harness validation are required before any deployment."
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
 st.markdown(
     f"<div style='text-align:center; color:#bbb; font-size:11px; margin-top:30px; "
