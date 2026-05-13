@@ -1220,7 +1220,7 @@ with tab_lm:
     yr_26  = _load_lm_csv('lambdamart_26f_multiseed_full_shares_cash_yearly.csv',       _lm_mtime)
     holdings_legacy = _load_lm_csv('lambdamart_26f_frozen_latest_portfolio.csv',         _lm_mtime)
 
-    # Headline metrics: 26f EqWt (UNIV_FULL, TOPK_5, RB_5)
+    # Headline metrics: 26f EqWt + tr_price7f EqWt (Q75 hidden per user request)
     if rob_26 is not None:
         headline = rob_26[(rob_26['scenario'] == 'TOPK_5') & (rob_26['config'] == 'EqWt')]
         h_26 = headline.iloc[0] if len(headline) else None
@@ -1390,7 +1390,6 @@ with tab_lm:
         y26 = y26.rename(columns={'strategy_return_mean':'26f Return',       'alpha_mean':'26f Alpha'})
         ydf = y26.merge(y7, on='year').sort_values('year').reset_index(drop=True)
 
-        # Grouped bar charts: Return then Alpha
         col_r, col_a = st.columns(2)
         with col_r:
             fig_r = go.Figure()
@@ -1416,7 +1415,6 @@ with tab_lm:
             fig_a.add_hline(y=0, line=dict(color='#888', width=1, dash='dot'))
             st.plotly_chart(fig_a, use_container_width=True, config={'displayModeBar': False}, key="lm_year_alpha")
 
-        # Pre-scale to percent before display
         ydisp = ydf.copy()
         for col in ['26f Return','26f Alpha','tr_price7f Return','tr_price7f Alpha']:
             ydisp[col] = ydisp[col] * 100.0
