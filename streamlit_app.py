@@ -1261,8 +1261,20 @@ with tab_lm:
     st.markdown("---")
     st.subheader("Latest Holdings — tr_price7f & 26f")
 
-    holdings_7f     = _load_lm_csv('lambdamart_tr_price7f_latest_portfolio.csv', _lm_mtime)
-    holdings_26f    = _load_lm_csv('lambdamart_26f_latest_portfolio.csv',         _lm_mtime)
+    holdings_7f  = _load_lm_csv('lambdamart_tr_price7f_latest_portfolio.csv', _lm_mtime)
+    holdings_26f = _load_lm_csv('lambdamart_26f_latest_portfolio.csv',         _lm_mtime)
+
+    # ONE consolidated status line at the top of this section
+    missing = []
+    if holdings_7f  is None: missing.append('tr_price7f')
+    if holdings_26f is None: missing.append('26f')
+    if missing:
+        st.info(
+            f"Canonical {' & '.join(missing)} holdings CSV"
+            f"{'s have' if len(missing)>1 else ' has'} not been regenerated for 2026-05-12. "
+            f"{'Legacy 26f frozen monitor (2026-04-17) shown as fallback.' if '26f' in missing else ''} "
+            "Holdings should be re-run via the LambdaMART monitor script before presenting live names."
+        )
 
     def _render_holdings(col, df, schema_name, key_suffix, is_legacy=False):
         with col:
@@ -1273,12 +1285,10 @@ with tab_lm:
                 f"{schema_name.upper()}</span>"
             )
             if df is None:
-                st.markdown(badge + "<span style='margin-left:8px; color:#666;'>holdings file not generated</span>",
-                            unsafe_allow_html=True)
-                st.warning(
-                    f"`lambdamart_{schema_name.replace('tr_price','tr_price')}_latest_portfolio.csv` not found. "
-                    f"Generate it via `build_latest_portfolio()` in `lambdamart_26f_utils.py` "
-                    f"or `run_lambdamart_26f_frozen_monitor.py` (adapted for `{schema_name}` schema)."
+                st.markdown(
+                    badge + "<span style='margin-left:8px; color:#888; font-size:13px; "
+                    "font-style:italic;'>holdings not regenerated yet</span>",
+                    unsafe_allow_html=True,
                 )
                 return
             portfolio_date = df['portfolio_date'].iloc[0] if 'portfolio_date' in df.columns else df['Date'].iloc[0]
@@ -1290,19 +1300,19 @@ with tab_lm:
                     stale_warn = (
                         f"<span style='display:inline-block; margin-left:8px; padding:2px 8px; "
                         f"background:#f39c12; color:#fff; font-size:10px; font-weight:700; border-radius:8px;'>"
-                        f"STALE BY {days_stale}d</span>"
+                        f"STALE {days_stale}d</span>"
                     )
             except Exception:
                 pass
             legacy_tag = (
                 "<span style='display:inline-block; margin-left:8px; padding:2px 8px; "
                 "background:#95a5a6; color:#fff; font-size:10px; font-weight:700; border-radius:8px;'>"
-                "LEGACY FALLBACK</span>"
+                "LEGACY</span>"
             ) if is_legacy else ""
             st.markdown(
                 f"{badge}{stale_warn}{legacy_tag}"
                 f"<span style='margin-left:10px; color:#666; font-size:12px;'>"
-                f"portfolio_date = <code>{portfolio_date}</code></span>",
+                f"as of <code>{portfolio_date}</code></span>",
                 unsafe_allow_html=True,
             )
             disp = df.copy()
@@ -1320,28 +1330,12 @@ with tab_lm:
 
     # Side-by-side: tr_price7f (primary) | 26f (control)
     hcol_7f, hcol_26 = st.columns(2)
-
-    # tr_price7f: must come from `lambdamart_tr_price7f_latest_portfolio.csv`
     _render_holdings(hcol_7f, holdings_7f, 'tr_price7f', '7f', is_legacy=False)
-
-    # 26f: prefer `lambdamart_26f_latest_portfolio.csv`; fall back to legacy frozen monitor
+    # 26f: prefer canonical; fall back to legacy frozen monitor (clearly tagged)
     if holdings_26f is not None:
         _render_holdings(hcol_26, holdings_26f, '26f', '26f', is_legacy=False)
     else:
-        with hcol_26:
-            st.warning("`lambdamart_26f_latest_portfolio.csv` not generated. Showing **legacy "
-                       "frozen monitor** (`lambdamart_26f_frozen_latest_portfolio.csv`) as fallback.")
         _render_holdings(hcol_26, holdings_legacy, '26f', '26f_legacy', is_legacy=True)
-
-    # Global note
-    if holdings_7f is None or holdings_26f is None:
-        st.info(
-            "**Holdings status:** at least one of the canonical holdings CSVs is missing. "
-            "Regenerate both `lambdamart_tr_price7f_latest_portfolio.csv` and "
-            "`lambdamart_26f_latest_portfolio.csv` (date = 2026-05-12) before presenting live names. "
-            "The legacy `lambdamart_26f_frozen_latest_portfolio.csv` (2026-04-17) is shown as a "
-            "fallback only and is **not** current `tr_price7f` holdings."
-        )
 
     # ── 3. Backtest Performance (UNIV_FULL / TOPK_5 / RB_5, EqWt) ────────
     st.markdown("---")
