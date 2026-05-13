@@ -1250,6 +1250,7 @@ with tab_lm:
         default_df   = _load_lm_csv('lambdamart_top100liq_default_summary.csv',            _lm_mtime)
         yearly_df    = _load_lm_csv('lambdamart_top100liq_default_yearly_performance.csv', _lm_mtime)
         gap_df       = _load_lm_csv('lambdamart_top100liq_selected_unselected_gap_summary.csv', _lm_mtime)
+        trade_df     = _load_lm_csv('lambdamart_top100liq_trade_metrics_summary.csv',          _lm_mtime)
         h_26_top5    = _load_lm_csv('lambdamart_top100liq_26f_top5_latest_holdings.csv',   _lm_mtime)
         h_7f_top5    = _load_lm_csv('lambdamart_top100liq_tr_price7f_top5_latest_holdings.csv', _lm_mtime)
         h_26_top3    = _load_lm_csv('lambdamart_top100liq_26f_top3_latest_holdings.csv',   _lm_mtime)
@@ -1275,6 +1276,7 @@ with tab_lm:
         rob_df      = None  # legacy uses a different two-CSV layout — handle inline below
         yearly_df   = None
         gap_df      = None  # no selected-vs-unselected diagnostic for legacy branch
+        trade_df    = None  # no trade-level metrics for legacy branch
         h_26_top3   = None
 
     def _scen(df, schema, scenario):
@@ -1407,19 +1409,66 @@ with tab_lm:
                 },
             )
 
-    # Signal diagnostic: selected-vs-unselected 5-day forward return (Top100 liquid only)
-    if is_top100liq and gap_df is not None:
+    # Real-trade metrics: trade-level win rate, profit factor, avg trade return (Top100 liquid only)
+    if is_top100liq and trade_df is not None:
         st.markdown(
             "<div style='margin-top:14px; font-size:14px; font-weight:600; color:#333;'>"
-            "Signal diagnostic — selected vs unselected 5-day forward return"
+            "Trade-level metrics — TOPK_5"
             "</div>",
             unsafe_allow_html=True,
         )
         st.caption(
-            "Compares the **average 5-day forward return of the top-K selected names** against the "
-            "**average 5-day forward return of the rest of the eligible universe** on the same day. "
-            "Measures whether the daily ranking signal is actually predictive — independent of "
-            "rebalance cadence (RB_5/10/20 collapse to the same number here)."
+            "Computed from completed **sell events** in the `shares_cash` backtest. "
+            "**Trade win rate** = profitable sells / total sells. **Profit factor** = winning PnL / |losing PnL|. "
+            "**Avg trade return** = mean realised % return per completed trade."
+        )
+        trows = []
+        for schema in ['26f', 'tr_price7f']:
+            sub = trade_df[(trade_df['schema'] == schema) & (trade_df['scenario'] == 'TOPK_5')]
+            if not len(sub): continue
+            r = sub.iloc[0]
+            trows.append({
+                'Schema':            schema,
+                'Trades':            int(r['n_trades']),
+                'Wins':              int(r['win_trades']),
+                'Losses':            int(r['loss_trades']),
+                'Trade win %':       r['trade_win_rate']        * 100.0,
+                'Profit factor':     float(r['trade_profit_factor']),
+                'Avg trade return':  r['avg_trade_return']      * 100.0,
+            })
+        if trows:
+            tdf = pd.DataFrame(trows)
+            st.dataframe(
+                tdf, hide_index=True, use_container_width=True, key="lm_trade_metrics",
+                column_config={
+                    'Trades':           st.column_config.NumberColumn(format='%d'),
+                    'Wins':             st.column_config.NumberColumn(format='%d'),
+                    'Losses':           st.column_config.NumberColumn(format='%d'),
+                    'Trade win %':      st.column_config.NumberColumn(format='%.1f%%'),
+                    'Profit factor':    st.column_config.NumberColumn(format='%.2f'),
+                    'Avg trade return': st.column_config.NumberColumn(format='%+.2f%%'),
+                },
+            )
+            st.caption(
+                "**Read:** trade win rates are similar between schemas (~60-61%), but `26f` has a "
+                "**higher profit factor (1.28 vs 1.15)** and a **larger average trade return "
+                "(+3.62% vs +2.55%)**. After moving to true trade metrics, `26f` is still the "
+                "stronger schema on the Top100 liquid ex-ETF universe."
+            )
+
+    # Signal diagnostic: selected-vs-unselected 5-day forward return (Top100 liquid only)
+    if is_top100liq and gap_df is not None:
+        st.markdown(
+            "<div style='margin-top:14px; font-size:14px; font-weight:600; color:#333;'>"
+            "Signal diagnostic — selected vs unselected 5-day forward return (ranking only)"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Pure **ranking** check — independent of any execution. Compares the average 5-day forward "
+            "return of the top-K **selected** names against the **rest of the eligible universe** on "
+            "the same day. RB_5/10/20 collapse to the same number here since the daily ranking spread "
+            "is independent of rebalance cadence."
         )
         # Default (TOPK_5 only) — headline diagnostic
         rows = []
@@ -1471,8 +1520,8 @@ with tab_lm:
             "(LIQ_TOP90/70). RB_5/10/20 are omitted — they collapse to the TOPK_5 row above because "
             "the daily ranking spread is independent of rebalance cadence."
         )
-        gap_scenarios = ['TOPK_3', 'TOPK_5', 'TOPK_10', 'LIQ_TOP90_EXETF', 'LIQ_TOP70_EXETF']
-        gap_labels    = {'TOPK_3': 'TOPK_3', 'TOPK_5': 'TOPK_5', 'TOPK_10': 'TOPK_10',
+        gap_scenarios = ['TOPK_5', 'TOPK_10', 'LIQ_TOP90_EXETF', 'LIQ_TOP70_EXETF']
+        gap_labels    = {'TOPK_5': 'TOPK_5', 'TOPK_10': 'TOPK_10',
                          'LIQ_TOP90_EXETF': 'LIQ_TOP90', 'LIQ_TOP70_EXETF': 'LIQ_TOP70'}
         gap_rows = []
         for sc in gap_scenarios:
@@ -1510,9 +1559,9 @@ with tab_lm:
                "rebalance-cadence, and universe-cutoff scenarios.")
 
     if is_top100liq:
-        scenarios = ['TOPK_3', 'TOPK_5', 'TOPK_10', 'RB_10', 'RB_20', 'LIQ_TOP90_EXETF', 'LIQ_TOP70_EXETF']
+        scenarios = ['TOPK_5', 'TOPK_10', 'RB_10', 'RB_20', 'LIQ_TOP90_EXETF', 'LIQ_TOP70_EXETF']
         scenario_labels = {
-            'TOPK_3': 'TOPK_3', 'TOPK_5': 'TOPK_5', 'TOPK_10': 'TOPK_10',
+            'TOPK_5': 'TOPK_5', 'TOPK_10': 'TOPK_10',
             'RB_10':  'RB_10',  'RB_20':  'RB_20',
             'LIQ_TOP90_EXETF': 'LIQ_TOP90', 'LIQ_TOP70_EXETF': 'LIQ_TOP70',
         }
@@ -1532,7 +1581,7 @@ with tab_lm:
                 'tr_price7f MDD':    r7f['mdd']    * 100.0,
             })
     else:
-        scenarios = ['TOPK_3', 'TOPK_5', 'TOPK_10', 'RB_10', 'RB_20', 'UNIV_TOP90', 'UNIV_TOP70']
+        scenarios = ['TOPK_5', 'TOPK_10', 'RB_10', 'RB_20', 'UNIV_TOP90', 'UNIV_TOP70']
         scenario_labels = {sc: sc for sc in scenarios}
         rob_rows = []
         for sc in scenarios:
@@ -1573,7 +1622,10 @@ with tab_lm:
             "<b>Performance:</b> <code>26f</code> clearly beats <code>tr_price7f</code> on the default "
             "TOPK_5 (+168.9% vs +93.5% cumulative return, Sharpe 0.751 vs 0.490). Drawdowns are "
             "comparable and large in both (-38.3% vs -41.4%). Both schemas beat VNINDEX over the test window.<br><br>"
-            "<b>Robustness:</b> <code>26f</code> wins TOPK_3, TOPK_5, TOPK_10, and both LIQ_TOP90/70 "
+            "<b>Trade quality:</b> at the trade level, win rates are similar (~60-61%) but "
+            "<code>26f</code> has the **higher profit factor (1.28 vs 1.15)** and the **larger average "
+            "trade return (+3.62% vs +2.55%)** — wins materially outsize losses.<br><br>"
+            "<b>Robustness:</b> <code>26f</code> wins TOPK_5, TOPK_10, and both LIQ_TOP90/70 "
             "universe-stress cuts. The clear exception is <b>RB_10</b>, where <code>tr_price7f</code> "
             "is materially stronger (+219.8% vs +81.2%). Slower RB_20 is weak for both schemas.<br><br>"
             "<b>Net:</b> <code>26f</code> EqWt is the preferred branch on the Top100 liquid (ex-ETF) "
