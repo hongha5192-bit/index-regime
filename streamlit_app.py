@@ -1251,8 +1251,12 @@ with tab_lm:
         yearly_df    = _load_lm_csv('lambdamart_top100liq_default_yearly_performance.csv', _lm_mtime)
         gap_df       = _load_lm_csv('lambdamart_top100liq_selected_unselected_gap_summary.csv', _lm_mtime)
         trade_df     = _load_lm_csv('lambdamart_top100liq_trade_metrics_summary.csv',          _lm_mtime)
-        h_26_top5    = _load_lm_csv('lambdamart_top100liq_26f_top5_latest_holdings.csv',   _lm_mtime)
-        h_7f_top5    = _load_lm_csv('lambdamart_top100liq_tr_price7f_top5_latest_holdings.csv', _lm_mtime)
+        # Active portfolio = actual current holdings from last rebalance (5-day cadence)
+        h_26_top5    = _load_lm_csv('lambdamart_top100liq_26f_top5_active_portfolio.csv',  _lm_mtime)
+        h_7f_top5    = _load_lm_csv('lambdamart_top100liq_tr_price7f_top5_active_portfolio.csv', _lm_mtime)
+        # Latest scores = today's watchlist (may differ from active until next rebalance)
+        scores_26    = _load_lm_csv('lambdamart_top100liq_26f_top5_latest_scores.csv',     _lm_mtime)
+        scores_7f    = _load_lm_csv('lambdamart_top100liq_tr_price7f_top5_latest_scores.csv', _lm_mtime)
         h_26_top3    = _load_lm_csv('lambdamart_top100liq_26f_top3_latest_holdings.csv',   _lm_mtime)
     else:
         rob_26_legacy = _load_lm_csv('lambdamart_26f_robustness_shares_cash_summary.csv',         _lm_mtime)
@@ -1277,6 +1281,8 @@ with tab_lm:
         yearly_df   = None
         gap_df      = None  # no selected-vs-unselected diagnostic for legacy branch
         trade_df    = None  # no trade-level metrics for legacy branch
+        scores_26   = None  # no separate active/scores split for legacy branch
+        scores_7f   = None
         h_26_top3   = None
 
     def _scen(df, schema, scenario):
@@ -1329,27 +1335,63 @@ with tab_lm:
             unsafe_allow_html=True,
         )
 
+    # Rebalance-cadence banner
+    if is_top100liq and h_26_top5 is not None and len(h_26_top5) and scores_26 is not None and len(scores_26):
+        try:
+            active_date = pd.Timestamp(h_26_top5['portfolio_date'].iloc[0]).date()
+            scores_date = pd.Timestamp(scores_26['score_date'].iloc[0]).date()
+            same_day = (active_date == scores_date)
+        except Exception:
+            active_date = scores_date = None
+            same_day = False
+        if active_date is not None:
+            if same_day:
+                cadence_html = (
+                    f"<b>Rebalance day.</b> Active portfolio and latest scores both dated "
+                    f"<code>{active_date}</code> — the book just rebalanced into the latest top-5."
+                )
+                cadence_color = '#27ae60'
+            else:
+                cadence_html = (
+                    f"<b>Mid-cycle.</b> Active portfolio was set on <code>{active_date}</code> "
+                    f"(last rebalance, 5-day cadence). Latest scores are from <code>{scores_date}</code> — "
+                    f"a watchlist of what the model would pick today, but the book does not rotate "
+                    f"until the next rebalance day."
+                )
+                cadence_color = '#f39c12'
+            st.markdown(
+                f"<div style='margin-top:10px; padding:10px 14px; background:#fafbfc; "
+                f"border-left:4px solid {cadence_color}; border-radius:6px; font-size:13px; "
+                f"line-height:1.6;'>{cadence_html}</div>",
+                unsafe_allow_html=True,
+            )
+
     st.markdown(" ")  # small visual gap
 
-    def _render_holdings(col, df, schema_name, key_suffix):
+    def _render_holdings(col, df, schema_name, key_suffix, role_label, role_color,
+                         date_field='portfolio_date'):
         with col:
             label_color = '#3498db' if schema_name == '26f' else '#e67e22'
             badge = (
                 f"<span style='display:inline-block; padding:2px 10px; background:{label_color}; "
                 f"color:#fff; font-size:11px; font-weight:700; border-radius:10px; letter-spacing:1px;'>"
                 f"{schema_name.upper()}</span>"
+                f"<span style='display:inline-block; margin-left:6px; padding:2px 8px; background:{role_color}; "
+                f"color:#fff; font-size:10px; font-weight:700; border-radius:8px; letter-spacing:0.5px;'>"
+                f"{role_label}</span>"
             )
             if df is None or not len(df):
                 st.markdown(
                     badge + "<span style='margin-left:8px; color:#888; font-size:13px; "
-                    "font-style:italic;'>holdings file not found</span>",
+                    "font-style:italic;'>file not found</span>",
                     unsafe_allow_html=True,
                 )
                 return
-            portfolio_date = df['portfolio_date'].iloc[0] if 'portfolio_date' in df.columns else df['Date'].iloc[0]
+            d_col = date_field if date_field in df.columns else ('portfolio_date' if 'portfolio_date' in df.columns else 'Date')
+            portfolio_date = df[d_col].iloc[0]
             st.markdown(
                 f"{badge}<span style='margin-left:10px; color:#666; font-size:12px;'>"
-                f"top 5 EqWt as of <code>{portfolio_date}</code></span>",
+                f"as of <code>{portfolio_date}</code></span>",
                 unsafe_allow_html=True,
             )
             disp = df.copy()
@@ -1369,9 +1411,34 @@ with tab_lm:
                 },
             )
 
+    # Active portfolio (current actual holdings from last rebalance)
+    st.markdown(
+        "<div style='margin-top:6px; font-size:14px; font-weight:600; color:#333;'>"
+        "Active portfolio — actual holdings since last rebalance"
+        "</div>",
+        unsafe_allow_html=True,
+    )
     h26_col, h7f_col = st.columns(2)
-    _render_holdings(h26_col, h_26_top5, '26f',        '26f_top5')
-    _render_holdings(h7f_col, h_7f_top5, 'tr_price7f', '7f_top5')
+    _render_holdings(h26_col, h_26_top5, '26f',        '26f_active',
+                     'ACTIVE', '#27ae60', date_field='portfolio_date')
+    _render_holdings(h7f_col, h_7f_top5, 'tr_price7f', '7f_active',
+                     'ACTIVE', '#27ae60', date_field='portfolio_date')
+
+    # Latest scores / watchlist (today's model picks — only acted on at next rebalance)
+    if is_top100liq and (scores_26 is not None or scores_7f is not None):
+        st.markdown(
+            "<div style='margin-top:14px; font-size:14px; font-weight:600; color:#333;'>"
+            "Latest scores — watchlist for next rebalance"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption("These are today's top-5 by model score. They become the active portfolio at the "
+                   "**next rebalance day** — the live book does not rotate intraday.")
+        s26_col, s7f_col = st.columns(2)
+        _render_holdings(s26_col, scores_26, '26f',        '26f_scores',
+                         'WATCHLIST', '#7f8c8d', date_field='score_date')
+        _render_holdings(s7f_col, scores_7f, 'tr_price7f', '7f_scores',
+                         'WATCHLIST', '#7f8c8d', date_field='score_date')
 
     # ── 2. Backtest results ─────────────────────────────────────────────
     st.markdown("---")
