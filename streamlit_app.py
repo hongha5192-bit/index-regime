@@ -1421,21 +1421,20 @@ with tab_lm:
             "Measures whether the daily ranking signal is actually predictive — independent of "
             "rebalance cadence (RB_5/10/20 collapse to the same number here)."
         )
+        # Default (TOPK_5 only) — headline diagnostic
         rows = []
-        for sc, label in [('TOPK_5', 'TOPK_5 (default)'), ('TOPK_3', 'TOPK_3 (concentrated)')]:
-            for schema in ['26f', 'tr_price7f']:
-                sub = gap_df[(gap_df['schema'] == schema) & (gap_df['scenario'] == sc)]
-                if not len(sub): continue
-                r = sub.iloc[0]
-                rows.append({
-                    'Scenario':         label,
-                    'Schema':           schema,
-                    'Gap':              r['gap_5d_mean']           * 100.0,
-                    'Gap win %':        r['gap_win_rate']          * 100.0,
-                    'Gap PF':           float(r['gap_profit_factor']),
-                    'Sel win %':        r['selected_win_rate']     * 100.0,
-                    'Unsel win %':      r['unselected_win_rate']   * 100.0,
-                })
+        for schema in ['26f', 'tr_price7f']:
+            sub = gap_df[(gap_df['schema'] == schema) & (gap_df['scenario'] == 'TOPK_5')]
+            if not len(sub): continue
+            r = sub.iloc[0]
+            rows.append({
+                'Schema':       schema,
+                'Gap':          r['gap_5d_mean']           * 100.0,
+                'Gap win %':    r['gap_win_rate']          * 100.0,
+                'Gap PF':       float(r['gap_profit_factor']),
+                'Sel win %':    r['selected_win_rate']     * 100.0,
+                'Unsel win %':  r['unselected_win_rate']   * 100.0,
+            })
         if rows:
             gdf = pd.DataFrame(rows)
             st.dataframe(
@@ -1455,10 +1454,53 @@ with tab_lm:
             )
             st.caption(
                 "**Read:** both schemas show a real selected-minus-unselected spread (~0.62%/5d on "
-                "default TOPK_5) with **profit factor > 1.5** (positive-gap days more than make up "
-                "for negative-gap days). `tr_price7f` has the slightly stronger raw-selection win rate "
-                "and profit factor, but `26f` still wins on realised portfolio performance in the "
-                "`shares_cash` backtest above."
+                "default TOPK_5) with **profit factor > 1.5**. `tr_price7f` has slightly stronger raw "
+                "selection metrics; `26f` still wins on realised portfolio P&L in the `shares_cash` "
+                "backtest above."
+            )
+
+        # Robustness across scenarios — same gap metric, different portfolio width / universe
+        st.markdown(
+            "<div style='margin-top:14px; font-size:13px; font-weight:600; color:#444;'>"
+            "Signal diagnostic — robustness across scenarios"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Same gap metric across different portfolio widths (TOPK_3/5/10) and universe cutoffs "
+            "(LIQ_TOP90/70). RB_5/10/20 are omitted — they collapse to the TOPK_5 row above because "
+            "the daily ranking spread is independent of rebalance cadence."
+        )
+        gap_scenarios = ['TOPK_3', 'TOPK_5', 'TOPK_10', 'LIQ_TOP90_EXETF', 'LIQ_TOP70_EXETF']
+        gap_labels    = {'TOPK_3': 'TOPK_3', 'TOPK_5': 'TOPK_5', 'TOPK_10': 'TOPK_10',
+                         'LIQ_TOP90_EXETF': 'LIQ_TOP90', 'LIQ_TOP70_EXETF': 'LIQ_TOP70'}
+        gap_rows = []
+        for sc in gap_scenarios:
+            r26 = gap_df[(gap_df['schema'] == '26f')        & (gap_df['scenario'] == sc)]
+            r7f = gap_df[(gap_df['schema'] == 'tr_price7f') & (gap_df['scenario'] == sc)]
+            if not len(r26) or not len(r7f): continue
+            r26 = r26.iloc[0]; r7f = r7f.iloc[0]
+            gap_rows.append({
+                'Scenario':       gap_labels[sc],
+                '26f Gap':        r26['gap_5d_mean']         * 100.0,
+                '26f Win %':      r26['gap_win_rate']        * 100.0,
+                '26f PF':         float(r26['gap_profit_factor']),
+                '7f Gap':         r7f['gap_5d_mean']         * 100.0,
+                '7f Win %':       r7f['gap_win_rate']        * 100.0,
+                '7f PF':          float(r7f['gap_profit_factor']),
+            })
+        if gap_rows:
+            gap_rob = pd.DataFrame(gap_rows)
+            st.dataframe(
+                gap_rob, hide_index=True, use_container_width=True, key="lm_gap_robust",
+                column_config={
+                    '26f Gap':   st.column_config.NumberColumn(format='%+.3f%%'),
+                    '26f Win %': st.column_config.NumberColumn(format='%.1f%%'),
+                    '26f PF':    st.column_config.NumberColumn(format='%.2f'),
+                    '7f Gap':    st.column_config.NumberColumn(format='%+.3f%%'),
+                    '7f Win %':  st.column_config.NumberColumn(format='%.1f%%'),
+                    '7f PF':     st.column_config.NumberColumn(format='%.2f'),
+                },
             )
 
     # ── 3. Robustness test ──────────────────────────────────────────────
