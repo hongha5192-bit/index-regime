@@ -404,7 +404,7 @@ tab_summary, tab_dash, tab_feat, tab_imp, tab_lm = st.tabs([
     "Dashboard",
     f"Features ({len(FEATURE_CATALOG)})",
     "Feature Importance",
-    "LambdaMART",
+    "Stock Ranking",
 ])
 
 # ─────────────────────────────── Tab 0: Summary ─────────────────────────────
@@ -1200,11 +1200,11 @@ _lm_mtime = tuple(int(os.path.getmtime(os.path.join(LM_DIR, f)))
                   for f in os.listdir(LM_DIR) if os.path.exists(os.path.join(LM_DIR, f))) if os.path.exists(LM_DIR) else ()
 
 with tab_lm:
-    st.title("LambdaMART Research")
+    st.title("Stock Ranking — LambdaMART Research")
     st.markdown(
         "<div style='display:flex; gap:10px; margin-top:-6px; margin-bottom:8px; align-items:center;'>"
-        "<span style='color:#666; font-size:13px;'>XGBoost <code>rank:ndcg</code> · "
-        "Walk-forward · <code>shares_cash</code> backtest engine</span>"
+        "<span style='color:#666; font-size:13px;'>Cross-sectional LambdaMART ranking · "
+        "XGBoost <code>rank:ndcg</code> · Walk-forward · <code>shares_cash</code> engine</span>"
         "<span style='display:inline-block; padding:3px 10px; background:#27ae60; color:#fff; "
         "font-size:11px; font-weight:700; border-radius:12px; letter-spacing:0.5px;'>"
         "DATA THROUGH 2026-05-12</span></div>",
