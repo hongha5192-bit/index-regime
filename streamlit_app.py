@@ -1249,6 +1249,7 @@ with tab_lm:
         rob_df       = _load_lm_csv('lambdamart_top100liq_robustness_eqwt_summary.csv',    _lm_mtime)
         default_df   = _load_lm_csv('lambdamart_top100liq_default_summary.csv',            _lm_mtime)
         yearly_df    = _load_lm_csv('lambdamart_top100liq_default_yearly_performance.csv', _lm_mtime)
+        gap_df       = _load_lm_csv('lambdamart_top100liq_selected_unselected_gap_summary.csv', _lm_mtime)
         h_26_top5    = _load_lm_csv('lambdamart_top100liq_26f_top5_latest_holdings.csv',   _lm_mtime)
         h_7f_top5    = _load_lm_csv('lambdamart_top100liq_tr_price7f_top5_latest_holdings.csv', _lm_mtime)
         h_26_top3    = _load_lm_csv('lambdamart_top100liq_26f_top3_latest_holdings.csv',   _lm_mtime)
@@ -1273,6 +1274,7 @@ with tab_lm:
         default_df  = pd.DataFrame(legacy_rows) if legacy_rows else None
         rob_df      = None  # legacy uses a different two-CSV layout — handle inline below
         yearly_df   = None
+        gap_df      = None  # no selected-vs-unselected diagnostic for legacy branch
         h_26_top3   = None
 
     def _scen(df, schema, scenario):
@@ -1403,6 +1405,52 @@ with tab_lm:
                     'Alpha total': st.column_config.NumberColumn(format='%+.1f%%'),
                     'Beat years':  st.column_config.NumberColumn(format='%d'),
                 },
+            )
+
+    # Signal diagnostic: selected-vs-unselected 5-day forward return (Top100 liquid only)
+    if is_top100liq and gap_df is not None:
+        st.markdown(
+            "<div style='margin-top:14px; font-size:14px; font-weight:600; color:#333;'>"
+            "Signal diagnostic — selected vs unselected 5-day forward return"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Compares the **average 5-day forward return of the top-K selected names** against the "
+            "**average 5-day forward return of the rest of the eligible universe** on the same day. "
+            "Measures whether the daily ranking signal is actually predictive — independent of "
+            "rebalance cadence (RB_5/10/20 collapse to the same number here)."
+        )
+        rows = []
+        for sc, label in [('TOPK_5', 'TOPK_5 (default)'), ('TOPK_3', 'TOPK_3 (concentrated)')]:
+            for schema in ['26f', 'tr_price7f']:
+                sub = gap_df[(gap_df['schema'] == schema) & (gap_df['scenario'] == sc)]
+                if not len(sub): continue
+                r = sub.iloc[0]
+                rows.append({
+                    'Scenario':         label,
+                    'Schema':           schema,
+                    'Selected 5D':      r['selected_ret_5d_mean']   * 100.0,
+                    'Unselected 5D':    r['unselected_ret_5d_mean'] * 100.0,
+                    'Gap':              r['gap_5d_mean']            * 100.0,
+                    'Gap positive %':   r['gap_win_rate']           * 100.0,
+                })
+        if rows:
+            gdf = pd.DataFrame(rows)
+            st.dataframe(
+                gdf, hide_index=True, use_container_width=True, key="lm_gap_diag",
+                column_config={
+                    'Selected 5D':     st.column_config.NumberColumn(format='%+.3f%%'),
+                    'Unselected 5D':   st.column_config.NumberColumn(format='%+.3f%%'),
+                    'Gap':             st.column_config.NumberColumn(format='%+.3f%%'),
+                    'Gap positive %':  st.column_config.NumberColumn(format='%.1f%%'),
+                },
+            )
+            st.caption(
+                "**Read:** both schemas show a real selected-minus-unselected spread on the default "
+                "TOPK_5 (~0.62%/5d). `26f` has stronger realised portfolio P&L; `tr_price7f` posts a "
+                "slightly larger TOPK_3 raw-selection gap. The gap-positive rate (~55%) is the share "
+                "of days where the selected basket beats the unselected basket forward."
             )
 
     # ── 3. Robustness test ──────────────────────────────────────────────
