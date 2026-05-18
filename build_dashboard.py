@@ -34,6 +34,7 @@ OHLC_CSV = {
     'VNINDEX':    'VNINDEX_OHLCV_with_features_v4.csv',
     'VNMIDCAP':   'VNMIDCAP_OHLCV_with_features_v4_shared.csv',
     'VNSMALLCAP': 'VNSMALLCAP_OHLCV_with_features_v4_shared.csv',
+    'VN30':       'VN30_OHLCV_with_features_v4.csv',
 }
 
 

@@ -330,12 +330,15 @@ def _data_mtime_key():
         os.path.join(ROOT, 'phase4_cjm_v7_vnindex_results.npz'),
         os.path.join(ROOT, 'phase4_cjm_v7_midcap_results.npz'),
         os.path.join(ROOT, 'phase4_cjm_v7_smallcap_results.npz'),
+        os.path.join(ROOT, 'phase4_cjm_v7_vn30_results.npz'),
         os.path.join(ROOT, 'phase4_regime_v7_vnindex.csv'),
         os.path.join(ROOT, 'phase4_regime_v7_midcap.csv'),
         os.path.join(ROOT, 'phase4_regime_v7_smallcap.csv'),
+        os.path.join(ROOT, 'phase4_regime_v7_vn30.csv'),
         os.path.join(ROOT, 'VNINDEX_OHLCV_with_features_v4.csv'),
         os.path.join(ROOT, 'VNMIDCAP_OHLCV_with_features_v4_shared.csv'),
         os.path.join(ROOT, 'VNSMALLCAP_OHLCV_with_features_v4_shared.csv'),
+        os.path.join(ROOT, 'VN30_OHLCV_with_features_v4.csv'),
         os.path.join(ROOT, 'feature_importance_extended_v7.csv'),
     ]
     return tuple(int(os.path.getmtime(p)) for p in paths if os.path.exists(p))
@@ -343,7 +346,7 @@ def _data_mtime_key():
 
 @st.cache_data
 def load_all(_mtime_key):
-    cases = [('vnindex','VNINDEX'),('midcap','VNMIDCAP'),('smallcap','VNSMALLCAP')]
+    cases = [('vnindex','VNINDEX'),('midcap','VNMIDCAP'),('smallcap','VNSMALLCAP'),('vn30','VN30')]
     out = {}
     for tag, name in cases:
         out[name] = load_regime_series(
@@ -360,6 +363,7 @@ def load_feature_csvs(_mtime_key):
         'VNINDEX':    pd.read_csv(os.path.join(ROOT, 'VNINDEX_OHLCV_with_features_v4.csv'),    parse_dates=['Date']),
         'VNMIDCAP':   pd.read_csv(os.path.join(ROOT, 'VNMIDCAP_OHLCV_with_features_v4_shared.csv'), parse_dates=['Date']),
         'VNSMALLCAP': pd.read_csv(os.path.join(ROOT, 'VNSMALLCAP_OHLCV_with_features_v4_shared.csv'), parse_dates=['Date']),
+        'VN30':       pd.read_csv(os.path.join(ROOT, 'VN30_OHLCV_with_features_v4.csv'),       parse_dates=['Date']),
     }
 
 @st.cache_data
@@ -369,15 +373,15 @@ def load_importance(_mtime_key):
 
 _mtime = _data_mtime_key()
 indices = load_all(_mtime)
-vnindex, midcap, smallcap = indices['VNINDEX'], indices['VNMIDCAP'], indices['VNSMALLCAP']
+vnindex, midcap, smallcap, vn30 = indices['VNINDEX'], indices['VNMIDCAP'], indices['VNSMALLCAP'], indices['VN30']
 feat_csvs = load_feature_csvs(_mtime)
 imp = load_importance(_mtime)
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### Settings")
-    chart_index = st.radio("Chart focus", ["All 3", "VNINDEX", "VNMIDCAP", "VNSMALLCAP"], index=0)
-    perf_index  = st.selectbox("Performance metrics for", ["VNINDEX", "VNMIDCAP", "VNSMALLCAP"])
+    chart_index = st.radio("Chart focus", ["All 4", "VNINDEX", "VN30", "VNMIDCAP", "VNSMALLCAP"], index=0)
+    perf_index  = st.selectbox("Performance metrics for", ["VNINDEX", "VN30", "VNMIDCAP", "VNSMALLCAP"])
     show_rangeslider = st.checkbox("Show chart range slider", value=True)
     st.markdown("---")
     all_groups = sorted({grp for grp, _, _, _ in FEATURE_CATALOG})
@@ -625,18 +629,19 @@ with tab_summary:
     )
     stats_by_name = {
         'VNINDEX':    compute_summary_stats(vnindex),
+        'VN30':       compute_summary_stats(vn30),
         'VNMIDCAP':   compute_summary_stats(midcap),
         'VNSMALLCAP': compute_summary_stats(smallcap),
     }
-    cols_s = st.columns(3)
-    for col, (n, df) in zip(cols_s, [('VNINDEX', vnindex), ('VNMIDCAP', midcap), ('VNSMALLCAP', smallcap)]):
+    cols_s = st.columns(4)
+    for col, (n, df) in zip(cols_s, [('VNINDEX', vnindex), ('VN30', vn30), ('VNMIDCAP', midcap), ('VNSMALLCAP', smallcap)]):
         summary_card(col, n, df, stats_by_name[n])
 
     # ── Conclusion synthesis ────────────────────────────────────────────────
     st.markdown("---")
     st.subheader("Conclusion")
     bullet_parts = []
-    for name, df in [('VNINDEX', vnindex), ('VNMIDCAP', midcap), ('VNSMALLCAP', smallcap)]:
+    for name, df in [('VNINDEX', vnindex), ('VN30', vn30), ('VNMIDCAP', midcap), ('VNSMALLCAP', smallcap)]:
         last = df.iloc[-1]
         prev = df.iloc[-2]
         label = last['label']
@@ -771,11 +776,11 @@ def regime_card(col, name, df, card_key):
 
 with tab_dash:
     st.subheader("Current regime")
-    cols = st.columns(3)
-    card_keys = ['vnindex', 'midcap', 'smallcap']
+    cols = st.columns(4)
+    card_keys = ['vnindex', 'vn30', 'midcap', 'smallcap']
     for col, (n, df), ckey in zip(
         cols,
-        [('VNINDEX', vnindex), ('VNMIDCAP', midcap), ('VNSMALLCAP', smallcap)],
+        [('VNINDEX', vnindex), ('VN30', vn30), ('VNMIDCAP', midcap), ('VNSMALLCAP', smallcap)],
         card_keys,
     ):
         regime_card(col, n, df, ckey)
@@ -783,8 +788,8 @@ with tab_dash:
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
     st.subheader("Regime timelines")
 
-    chart_map = {'VNINDEX': vnindex, 'VNMIDCAP': midcap, 'VNSMALLCAP': smallcap}
-    if chart_index == "All 3":
+    chart_map = {'VNINDEX': vnindex, 'VN30': vn30, 'VNMIDCAP': midcap, 'VNSMALLCAP': smallcap}
+    if chart_index == "All 4":
         for i, (n, df) in enumerate(chart_map.items()):
             st.plotly_chart(
                 make_chart(df, f"{n}", f"{n} close",
@@ -805,7 +810,7 @@ with tab_dash:
     st.caption("Per (index, regime): bar count and share, mean & std of daily Close returns, "
                "median & mean run length in bars.")
     dist_rows = []
-    for name, df in [('VNINDEX', vnindex), ('VNMIDCAP', midcap), ('VNSMALLCAP', smallcap)]:
+    for name, df in [('VNINDEX', vnindex), ('VN30', vn30), ('VNMIDCAP', midcap), ('VNSMALLCAP', smallcap)]:
         d = df.sort_values('Date').reset_index(drop=True).copy()
         d['ret'] = d['Close'].pct_change()
         total = len(d)
@@ -914,9 +919,10 @@ with tab_feat:
     for grp, fname, desc, formula in FEATURE_CATALOG:
         if grp not in feat_groups:
             continue
-        vV = float(latest['VNINDEX'][fname])
-        vM = float(latest['VNMIDCAP'][fname])
-        vS = float(latest['VNSMALLCAP'][fname])
+        vV  = float(latest['VNINDEX'][fname])
+        v30 = float(latest['VN30'][fname])
+        vM  = float(latest['VNMIDCAP'][fname])
+        vS  = float(latest['VNSMALLCAP'][fname])
 
         def fmt(x, _grp=grp, _fname=fname):
             if _grp == 'Flow':
@@ -933,6 +939,7 @@ with tab_feat:
             'Description': desc,
             'Formula': formula,
             'VNINDEX': fmt(vV),
+            'VN30': fmt(v30),
             'VNMIDCAP': fmt(vM),
             'VNSMALLCAP': fmt(vS),
         })
