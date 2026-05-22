@@ -128,6 +128,94 @@ def trough_3m(df, n_bars=63):
     pct_above = (last / low - 1.0) * 100.0 if low else 0.0
     return low_date, low, pct_above
 
+
+def detect_softening_now(df, drop_threshold=0.20, sat_threshold=0.95, window=5):
+    """Is P(Bull) softening *right now*? Returns dict with current state or None.
+
+    Triggers when P(Bull) was >=sat_threshold `window` days ago AND has dropped
+    by >=drop_threshold since. Matches the historical episode definition.
+    """
+    if len(df) <= window or 'v7_Bull' not in df.columns:
+        return None
+    df = df.sort_values('Date').reset_index(drop=True)
+    cur, prev = float(df['v7_Bull'].iloc[-1]), float(df['v7_Bull'].iloc[-1-window])
+    delta = cur - prev
+    is_softening = (prev >= sat_threshold) and (delta <= -drop_threshold)
+    return {
+        'active': bool(is_softening),
+        'p_bull_now': cur,
+        'p_bull_prev': prev,
+        'delta': delta,
+        'window': window,
+    }
+
+
+def historical_softening_episodes(df, drop_threshold=0.20, sat_threshold=0.95, window=5, dedup_days=10):
+    """Find historical 5-day Bull-softening episodes (analogous to current setup).
+
+    Returns DataFrame of episode start rows. Deduplicates clusters within
+    dedup_days so a multi-day drift is counted as one event.
+    """
+    if 'v7_Bull' not in df.columns or len(df) < window + 1:
+        return pd.DataFrame()
+    d = df.sort_values('Date').reset_index(drop=True).copy()
+    d['bull_w_ago'] = d['v7_Bull'].shift(window)
+    d['bull_chg'] = d['v7_Bull'] - d['bull_w_ago']
+    cand = d[(d['bull_w_ago'] >= sat_threshold) &
+             (d['v7_Bull'] <= sat_threshold - drop_threshold) &
+             (d['bull_chg'] <= -drop_threshold)].copy()
+    if len(cand) == 0:
+        return cand
+    cand['gap'] = cand['Date'].diff().dt.days.fillna(999)
+    cand['event_id'] = (cand['gap'] > dedup_days).cumsum()
+    events = cand.groupby('event_id').first().reset_index(drop=True)
+    return events[['Date', 'Close', 'v7_Bull', 'v7_Neut', 'v7_Bear', 'v7_label']]
+
+
+def forward_path_stats(df_regime, episodes, horizons=(5, 10, 20, 40)):
+    """For each episode start, compute future close returns + regime label at each horizon."""
+    if len(episodes) == 0:
+        return pd.DataFrame(), {}
+    d = df_regime.sort_values('Date').reset_index(drop=True)
+    n = len(d)
+    rows = []
+    for _, ev in episodes.iterrows():
+        match = d.index[d['Date'] == ev['Date']]
+        if len(match) == 0:
+            continue
+        idx = int(match[0])
+        if idx + max(horizons) >= n:
+            continue   # not enough forward data
+        row = {'date': ev['Date'].date(), 'p_bull': ev['v7_Bull'], 'close': ev['Close']}
+        for h in horizons:
+            close_h = d['Close'].iloc[idx + h]
+            row[f'ret_{h}d_pct'] = (close_h / ev['Close'] - 1.0) * 100.0
+            row[f'label_{h}d'] = d['v7_label'].iloc[idx + h]
+        rows.append(row)
+    if not rows:
+        return pd.DataFrame(), {}
+    forward = pd.DataFrame(rows)
+    stats = {}
+    for h in horizons:
+        col = f'ret_{h}d_pct'
+        v = forward[col].dropna()
+        if len(v) == 0:
+            continue
+        stats[f'{h}d'] = {
+            'median': float(v.median()),
+            'mean': float(v.mean()),
+            'p25': float(v.quantile(0.25)),
+            'p75': float(v.quantile(0.75)),
+            'pos_rate': float((v > 0).mean()) * 100.0,
+            'n': int(len(v)),
+        }
+    # Label distribution at +20d
+    if 'label_20d' in forward.columns:
+        cnt = forward['label_20d'].value_counts()
+        stats['label_20d'] = {k: int(cnt.get(k, 0)) for k in ['Bull', 'Neutral', 'Bear']}
+    return forward, stats
+
+
 st.set_page_config(page_title="CJM Regime Dashboard", layout="wide",
                    initial_sidebar_state="expanded",
                    menu_items={'About': "CJM v7 · 26 features · K=3 regimes"})
@@ -784,6 +872,146 @@ with tab_dash:
         card_keys,
     ):
         regime_card(col, n, df, ckey)
+
+    st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+
+    # ── Regime drift watch ─────────────────────────────────────────────────
+    st.subheader("Regime drift watch")
+    st.caption(
+        "Detects when P(Bull) is softening from saturation today, then conditions "
+        "on every historical episode where P(Bull) fell ≥0.20 over 5 days from "
+        "≥0.95 saturated. Shows the empirical forward-return distribution from those analogs."
+    )
+
+    drift_rows = []
+    drift_active_for = []
+    for n, df_idx in [('VNINDEX', vnindex), ('VN30', vn30), ('VNMIDCAP', midcap), ('VNSMALLCAP', smallcap)]:
+        d = detect_softening_now(df_idx)
+        if d is None:
+            continue
+        drift_rows.append({'Index': n, **d})
+        if d['active']:
+            drift_active_for.append((n, df_idx, d))
+
+    # Current state strip — one line per index
+    if drift_rows:
+        strip_cols = st.columns(len(drift_rows))
+        for cx, r in zip(strip_cols, drift_rows):
+            pill_bg = '#e74c3c' if r['active'] else '#27ae60'
+            pill_txt = 'SOFTENING' if r['active'] else 'STABLE'
+            arrow = '↓' if r['delta'] < 0 else ('↑' if r['delta'] > 0 else '→')
+            cx.markdown(
+                f"<div style='padding:10px 12px; background:#fafbfc; border:1px solid #e1e4e8; "
+                f"border-radius:8px; font-size:13px; line-height:1.55;'>"
+                f"<b>{r['Index']}</b>  "
+                f"<span style='display:inline-block; padding:1px 8px; background:{pill_bg}; color:#fff; "
+                f"font-size:10px; font-weight:700; border-radius:8px; letter-spacing:0.5px; margin-left:6px;'>"
+                f"{pill_txt}</span><br>"
+                f"P(Bull) <code>{r['p_bull_prev']:.2f}</code> → <code>{r['p_bull_now']:.2f}</code> "
+                f"<span style='color:#888;'>(Δ {arrow} {abs(r['delta']):.2f} over 5d)</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+    if not drift_active_for:
+        st.success("No index is in a Bull-softening drift right now. (Trigger: P(Bull) was ≥0.95 "
+                   "five trading days ago and has dropped by ≥0.20 since.)")
+    else:
+        # For each active index, show historical playbook
+        for n, df_idx, drift in drift_active_for:
+            st.markdown(
+                f"<div style='margin-top:10px; padding:12px 16px; background:#fff8e1; "
+                f"border-left:5px solid #f39c12; border-radius:8px; font-size:13px; line-height:1.7;'>"
+                f"<b>{n} is in a Bull-softening drift right now.</b> "
+                f"P(Bull) fell from <code>{drift['p_bull_prev']:.2f}</code> to "
+                f"<code>{drift['p_bull_now']:.2f}</code> over the last 5 trading days. "
+                f"Historical analogs and base-rate forward returns are below — these are "
+                f"empirical priors, not predictions."
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            episodes = historical_softening_episodes(df_idx)
+            # Exclude the current episode itself (need forward data)
+            if len(episodes):
+                cutoff = df_idx['Date'].iloc[-1] - pd.Timedelta(days=80)
+                episodes = episodes[episodes['Date'] <= cutoff].reset_index(drop=True)
+            forward, stats = forward_path_stats(df_idx, episodes)
+
+            if len(episodes) < 3:
+                st.info(f"Only {len(episodes)} historical analog episodes for {n} — "
+                        "sample too thin to summarise. Trigger needs longer training history.")
+                continue
+
+            # Base-rate panel + outcome distribution side by side
+            c_base, c_outcome = st.columns([3, 2])
+            with c_base:
+                st.markdown(f"**Forward-return base rates ({n}) — {len(forward)} analog episodes**")
+                rows_disp = []
+                for h_label in ['5d', '10d', '20d', '40d']:
+                    s = stats.get(h_label, {})
+                    if not s:
+                        continue
+                    rows_disp.append({
+                        'Horizon': '+' + h_label,
+                        'Median': s['median'],
+                        'Mean':   s['mean'],
+                        'P25':    s['p25'],
+                        'P75':    s['p75'],
+                        'Positive': s['pos_rate'],
+                    })
+                base_df = pd.DataFrame(rows_disp)
+                st.dataframe(
+                    base_df, hide_index=True, use_container_width=True, key=f"drift_base_{n}",
+                    column_config={
+                        'Median':   st.column_config.NumberColumn(format='%+.2f%%'),
+                        'Mean':     st.column_config.NumberColumn(format='%+.2f%%'),
+                        'P25':      st.column_config.NumberColumn(format='%+.2f%%'),
+                        'P75':      st.column_config.NumberColumn(format='%+.2f%%'),
+                        'Positive': st.column_config.NumberColumn('Pos rate', format='%.0f%%'),
+                    },
+                )
+            with c_outcome:
+                lbl = stats.get('label_20d', {})
+                total = sum(lbl.values()) if lbl else 0
+                st.markdown(f"**Regime at +20d (n={total})**")
+                if total > 0:
+                    outcome_rows = []
+                    for k, c in [('Bull', '#2ecc71'), ('Neutral', '#3498db'), ('Bear', '#e74c3c')]:
+                        v = lbl.get(k, 0)
+                        pct = (v / total * 100.0) if total else 0
+                        outcome_rows.append((k, v, pct, c))
+                    for k, v, pct, c in outcome_rows:
+                        st.markdown(
+                            f"<div style='padding:6px 10px; background:#fafbfc; border:1px solid #e1e4e8; "
+                            f"border-radius:6px; margin-bottom:4px; font-size:13px;'>"
+                            f"<span style='display:inline-block; width:60px;'>"
+                            f"<span style='display:inline-block; padding:1px 8px; background:{c}; color:#fff; "
+                            f"font-size:10px; font-weight:700; border-radius:8px;'>{k}</span></span>"
+                            f"<span style='color:#444; font-weight:600;'>{v}</span> / {total}  "
+                            f"<span style='color:#888;'>({pct:.0f}%)</span>"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+
+            # Show the analog episodes table (most recent first)
+            with st.expander(f"Show {len(forward)} historical analog episodes for {n}", expanded=False):
+                disp = forward.copy()
+                disp = disp.sort_values('date', ascending=False).reset_index(drop=True)
+                st.dataframe(
+                    disp[['date', 'close', 'p_bull', 'ret_5d_pct', 'ret_10d_pct', 'ret_20d_pct', 'ret_40d_pct', 'label_20d']],
+                    hide_index=True, use_container_width=True,
+                    key=f"drift_eps_{n}",
+                    column_config={
+                        'date':         st.column_config.TextColumn('Episode date'),
+                        'close':        st.column_config.NumberColumn('Close', format='%.2f'),
+                        'p_bull':       st.column_config.NumberColumn('P(Bull) @ event', format='%.2f'),
+                        'ret_5d_pct':   st.column_config.NumberColumn('+5d', format='%+.2f%%'),
+                        'ret_10d_pct':  st.column_config.NumberColumn('+10d', format='%+.2f%%'),
+                        'ret_20d_pct':  st.column_config.NumberColumn('+20d', format='%+.2f%%'),
+                        'ret_40d_pct':  st.column_config.NumberColumn('+40d', format='%+.2f%%'),
+                        'label_20d':    st.column_config.TextColumn('Regime @ +20d'),
+                    },
+                )
 
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
     st.subheader("Regime timelines")
