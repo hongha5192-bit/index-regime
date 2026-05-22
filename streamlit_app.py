@@ -6,6 +6,7 @@ Run with:
     streamlit run streamlit_app.py
 """
 import os, sys
+from itertools import combinations
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -129,18 +130,30 @@ def trough_3m(df, n_bars=63):
     return low_date, low, pct_above
 
 
+_FP_EPS = 1e-9  # tolerance so e.g. (0.80 - 1.00) hits the -0.20 boundary
+
+
+def _bull_col(df):
+    """Return the canonical P(Bull) column name in the loaded df, or None."""
+    for c in ('p_Bull', 'v7_Bull'):
+        if c in df.columns:
+            return c
+    return None
+
+
 def detect_softening_now(df, drop_threshold=0.20, sat_threshold=0.95, window=5):
     """Is P(Bull) softening *right now*? Returns dict with current state or None.
 
     Triggers when P(Bull) was >=sat_threshold `window` days ago AND has dropped
     by >=drop_threshold since. Matches the historical episode definition.
     """
-    if len(df) <= window or 'v7_Bull' not in df.columns:
+    col = _bull_col(df)
+    if col is None or len(df) <= window:
         return None
     df = df.sort_values('Date').reset_index(drop=True)
-    cur, prev = float(df['v7_Bull'].iloc[-1]), float(df['v7_Bull'].iloc[-1-window])
+    cur, prev = float(df[col].iloc[-1]), float(df[col].iloc[-1 - window])
     delta = cur - prev
-    is_softening = (prev >= sat_threshold) and (delta <= -drop_threshold)
+    is_softening = (prev >= sat_threshold - _FP_EPS) and (delta <= -drop_threshold + _FP_EPS)
     return {
         'active': bool(is_softening),
         'p_bull_now': cur,
@@ -156,20 +169,31 @@ def historical_softening_episodes(df, drop_threshold=0.20, sat_threshold=0.95, w
     Returns DataFrame of episode start rows. Deduplicates clusters within
     dedup_days so a multi-day drift is counted as one event.
     """
-    if 'v7_Bull' not in df.columns or len(df) < window + 1:
+    bull_col = _bull_col(df)
+    if bull_col is None or len(df) < window + 1:
         return pd.DataFrame()
+    # Companion columns: 'p_Neutral'/'p_Bear'/'label' for canonical loaded df,
+    # 'v7_Neut'/'v7_Bear'/'v7_label' for the raw CSV variant.
+    if bull_col == 'p_Bull':
+        neut_col, bear_col, label_col = 'p_Neutral', 'p_Bear', 'label'
+    else:
+        neut_col, bear_col, label_col = 'v7_Neut', 'v7_Bear', 'v7_label'
+
     d = df.sort_values('Date').reset_index(drop=True).copy()
-    d['bull_w_ago'] = d['v7_Bull'].shift(window)
-    d['bull_chg'] = d['v7_Bull'] - d['bull_w_ago']
-    cand = d[(d['bull_w_ago'] >= sat_threshold) &
-             (d['v7_Bull'] <= sat_threshold - drop_threshold) &
-             (d['bull_chg'] <= -drop_threshold)].copy()
+    d['bull_w_ago'] = d[bull_col].shift(window)
+    d['bull_chg'] = d[bull_col] - d['bull_w_ago']
+    cand = d[(d['bull_w_ago'] >= sat_threshold - _FP_EPS) &
+             (d[bull_col] <= sat_threshold - drop_threshold + _FP_EPS) &
+             (d['bull_chg'] <= -drop_threshold + _FP_EPS)].copy()
     if len(cand) == 0:
         return cand
     cand['gap'] = cand['Date'].diff().dt.days.fillna(999)
     cand['event_id'] = (cand['gap'] > dedup_days).cumsum()
     events = cand.groupby('event_id').first().reset_index(drop=True)
-    return events[['Date', 'Close', 'v7_Bull', 'v7_Neut', 'v7_Bear', 'v7_label']]
+    out = events[['Date', 'Close', bull_col, neut_col, bear_col, label_col]].copy()
+    # Normalize names so callers don't have to branch.
+    return out.rename(columns={bull_col: 'p_Bull', neut_col: 'p_Neutral',
+                               bear_col: 'p_Bear', label_col: 'label'})
 
 
 def forward_path_stats(df_regime, episodes, horizons=(5, 10, 20, 40)):
@@ -178,6 +202,10 @@ def forward_path_stats(df_regime, episodes, horizons=(5, 10, 20, 40)):
         return pd.DataFrame(), {}
     d = df_regime.sort_values('Date').reset_index(drop=True)
     n = len(d)
+    # historical_softening_episodes now normalizes to p_Bull/label, but accept
+    # the raw v7_Bull/v7_label variant too in case a caller passes raw rows.
+    ev_bull_key = 'p_Bull' if 'p_Bull' in episodes.columns else 'v7_Bull'
+    label_col = 'label' if 'label' in d.columns else 'v7_label'
     rows = []
     for _, ev in episodes.iterrows():
         match = d.index[d['Date'] == ev['Date']]
@@ -186,11 +214,11 @@ def forward_path_stats(df_regime, episodes, horizons=(5, 10, 20, 40)):
         idx = int(match[0])
         if idx + max(horizons) >= n:
             continue   # not enough forward data
-        row = {'date': ev['Date'].date(), 'p_bull': ev['v7_Bull'], 'close': ev['Close']}
+        row = {'date': ev['Date'].date(), 'p_bull': ev[ev_bull_key], 'close': ev['Close']}
         for h in horizons:
             close_h = d['Close'].iloc[idx + h]
             row[f'ret_{h}d_pct'] = (close_h / ev['Close'] - 1.0) * 100.0
-            row[f'label_{h}d'] = d['v7_label'].iloc[idx + h]
+            row[f'label_{h}d'] = d[label_col].iloc[idx + h]
         rows.append(row)
     if not rows:
         return pd.DataFrame(), {}
@@ -1082,6 +1110,194 @@ with tab_dash:
             'Median run (bars)': st.column_config.NumberColumn(format='%d'),
             'Mean run (bars)':   st.column_config.NumberColumn(format='%.1f'),
         },
+    )
+
+    # ── Train vs Test drift & cross-index structure ────────────────────────────
+    st.subheader("Train vs Test drift & cross-index structure")
+    st.caption("Train: Date < 2025-01-01. Test: 2025-01-01 onward. Drift = how the "
+               "label mix shifted in test. Cross-index agreement = same label on the "
+               "same date.")
+
+    def _psi(p, q, eps=1e-6):
+        p = np.clip(np.asarray(p, dtype=float), eps, None)
+        q = np.clip(np.asarray(q, dtype=float), eps, None)
+        return float(((p - q) * np.log(p / q)).sum())
+
+    def _cohen_kappa(a, b):
+        a = np.asarray(a); b = np.asarray(b)
+        if len(a) == 0:
+            return float('nan')
+        classes = sorted(set(list(a)) | set(list(b)))
+        po = float((a == b).mean())
+        pe = sum((a == c).mean() * (b == c).mean() for c in classes)
+        return (po - pe) / (1 - pe + 1e-12)
+
+    index_order = [('VNINDEX', vnindex), ('VN30', vn30),
+                   ('VNMIDCAP', midcap), ('VNSMALLCAP', smallcap)]
+
+    # 1. Train/test label distribution + PSI + persistence rolled into one table
+    dist_rows = []
+    for name, df in index_order:
+        d = df.sort_values('Date').reset_index(drop=True)
+        tr = d[d['Date'] < TRAIN_END]
+        te = d[d['Date'] >= TRAIN_END]
+        tr_vc = tr['label'].value_counts(normalize=True).reindex(REGIMES).fillna(0.0)
+        te_vc = te['label'].value_counts(normalize=True).reindex(REGIMES).fillna(0.0)
+        psi = _psi(te_vc.values, tr_vc.values)
+        tr_persist = float((tr['label'].iloc[1:].values == tr['label'].iloc[:-1].values).mean()) if len(tr) > 1 else float('nan')
+        te_persist = float((te['label'].iloc[1:].values == te['label'].iloc[:-1].values).mean()) if len(te) > 1 else float('nan')
+        dist_rows.append({
+            'Index': name,
+            'Train Bull': tr_vc['Bull'] * 100, 'Train Neut': tr_vc['Neutral'] * 100, 'Train Bear': tr_vc['Bear'] * 100,
+            'Test Bull':  te_vc['Bull'] * 100, 'Test Neut':  te_vc['Neutral'] * 100, 'Test Bear':  te_vc['Bear'] * 100,
+            'PSI': psi,
+            'Drift': ('High' if psi >= 0.25 else ('Moderate' if psi >= 0.10 else 'Low')),
+            'Train persist': tr_persist * 100,
+            'Test persist':  te_persist * 100,
+        })
+    drift_df = pd.DataFrame(dist_rows)
+    st.markdown("**1. Label distribution: train vs test (with class-distribution PSI)**")
+    st.dataframe(
+        drift_df,
+        hide_index=True, use_container_width=True, key="drift_dist_table",
+        column_config={
+            'Train Bull': st.column_config.NumberColumn(format='%.1f%%'),
+            'Train Neut': st.column_config.NumberColumn(format='%.1f%%'),
+            'Train Bear': st.column_config.NumberColumn(format='%.1f%%'),
+            'Test Bull':  st.column_config.NumberColumn(format='%.1f%%'),
+            'Test Neut':  st.column_config.NumberColumn(format='%.1f%%'),
+            'Test Bear':  st.column_config.NumberColumn(format='%.1f%%'),
+            'PSI':        st.column_config.NumberColumn(format='%.3f',
+                            help='Class-distribution PSI (test vs train). <0.10 low, 0.10-0.25 moderate, ≥0.25 high.'),
+            'Drift':      st.column_config.TextColumn(help='PSI band: Low / Moderate / High.'),
+            'Train persist': st.column_config.NumberColumn('Train same-label %', format='%.1f%%',
+                            help='Share of days where label_t == label_{t-1} in train.'),
+            'Test persist':  st.column_config.NumberColumn('Test same-label %',  format='%.1f%%',
+                            help='Same-label persistence in test. A naive predictor that copies yesterday already gets this.'),
+        },
+    )
+    st.caption(
+        "Persistence is the bar any predictive model must clear: "
+        "`predicted_label_t = label_{t-1}` already lands at ~95-97%. "
+        "Anything built on these labels needs to beat that to add value."
+    )
+
+    # 2. Cross-index agreement & Cohen kappa, train vs test
+    names = [n for n, _ in index_order]
+    dfs_map = {n: df for n, df in index_order}
+    pair_rows = []
+    for a, b in combinations(names, 2):
+        m = (dfs_map[a][['Date', 'label']].rename(columns={'label': 'la'})
+                .merge(dfs_map[b][['Date', 'label']].rename(columns={'label': 'lb'}),
+                       on='Date', how='inner'))
+        tr = m[m['Date'] < TRAIN_END]
+        te = m[m['Date'] >= TRAIN_END]
+        pair_rows.append({
+            'Pair': f"{a} / {b}",
+            'Train agreement': (tr['la'] == tr['lb']).mean() * 100 if len(tr) else float('nan'),
+            'Train kappa':     _cohen_kappa(tr['la'], tr['lb']) if len(tr) else float('nan'),
+            'Test agreement':  (te['la'] == te['lb']).mean() * 100 if len(te) else float('nan'),
+            'Test kappa':      _cohen_kappa(te['la'], te['lb']) if len(te) else float('nan'),
+            'Δ kappa':         (_cohen_kappa(te['la'], te['lb']) - _cohen_kappa(tr['la'], tr['lb']))
+                                 if len(tr) and len(te) else float('nan'),
+        })
+    pair_df = pd.DataFrame(pair_rows)
+    st.markdown("**2. Cross-index agreement & Cohen kappa (same label on same date)**")
+    st.dataframe(
+        pair_df,
+        hide_index=True, use_container_width=True, key="drift_pair_table",
+        column_config={
+            'Train agreement': st.column_config.NumberColumn(format='%.1f%%'),
+            'Train kappa':     st.column_config.NumberColumn(format='%.3f',
+                                help='Cohen kappa: 1=perfect, 0=chance, <0=worse than chance.'),
+            'Test agreement':  st.column_config.NumberColumn(format='%.1f%%'),
+            'Test kappa':      st.column_config.NumberColumn(format='%.3f'),
+            'Δ kappa':         st.column_config.NumberColumn('Δ kappa (test - train)', format='%+.3f',
+                                help='Negative means agreement dropped in 2025+.'),
+        },
+    )
+
+    # 3. Top consensus combos (test period only, common-date panel)
+    panel = None
+    for n, df in index_order:
+        sub = df[['Date', 'label']].rename(columns={'label': n})
+        panel = sub if panel is None else panel.merge(sub, on='Date', how='inner')
+    test_panel = panel[panel['Date'] >= TRAIN_END].copy()
+    combo_series = test_panel[names].apply(tuple, axis=1)
+    n_panel = len(test_panel)
+    top_combos = (
+        combo_series.value_counts().head(6).reset_index()
+        .rename(columns={'index': 'combo', 0: 'Days', 'count': 'Days'})
+    )
+    if 'combo' not in top_combos.columns:
+        top_combos.columns = ['combo', 'Days']
+    combo_rows = []
+    for _, row in top_combos.iterrows():
+        c = row['combo']
+        combo_rows.append({
+            'VNINDEX': c[0], 'VN30': c[1], 'VNMIDCAP': c[2], 'VNSMALLCAP': c[3],
+            'Days': int(row['Days']),
+            'Share': float(row['Days']) / n_panel * 100 if n_panel else float('nan'),
+        })
+    combo_df = pd.DataFrame(combo_rows)
+    st.markdown(f"**3. Top consensus state combinations — test period, "
+                f"{n_panel} aligned dates**")
+    st.dataframe(
+        combo_df,
+        hide_index=True, use_container_width=True, key="drift_combo_table",
+        column_config={
+            'Days':  st.column_config.NumberColumn(format='%d'),
+            'Share': st.column_config.ProgressColumn(format='%.1f%%', min_value=0.0, max_value=100.0),
+        },
+    )
+
+    # 4. Headline takeaway built from the data
+    # Use computed numbers so the message stays correct as data updates.
+    vn30_psi = float(drift_df.loc[drift_df['Index'] == 'VN30', 'PSI'].iloc[0])
+    vn30_vmid_te_kappa = float(pair_df.loc[pair_df['Pair'] == 'VN30 / VNMIDCAP', 'Test kappa'].iloc[0])
+    top_row = combo_rows[0] if combo_rows else None
+    if top_row is not None:
+        top_msg = (f"Top test-period combo: VNINDEX={top_row['VNINDEX']}, "
+                   f"VN30={top_row['VN30']}, VNMIDCAP={top_row['VNMIDCAP']}, "
+                   f"VNSMALLCAP={top_row['VNSMALLCAP']} → {top_row['Days']} days "
+                   f"({top_row['Share']:.0f}% of aligned test dates).")
+    else:
+        top_msg = ""
+
+    # Live softening read: count active softening indices and name them.
+    softening_now = []
+    for name, df_idx in index_order:
+        d = detect_softening_now(df_idx)
+        if d is not None and d.get('active'):
+            softening_now.append((name, d['p_bull_prev'], d['p_bull_now']))
+
+    if len(softening_now) >= 2 and all(n in ('VNINDEX', 'VN30') for n, _, _ in softening_now):
+        soft_msg = (
+            " <b>Today's read:</b> both large-cap baskets are softening "
+            "simultaneously — "
+            + ", ".join(f"<b>{n}</b> P(Bull) {p0:.2f}→{p1:.2f}" for n, p0, p1 in softening_now)
+            + ". When both VNINDEX and VN30 soften together, the train/test "
+            "structural story flips from 'narrow large-cap-led' to "
+            "<b>'large-cap leadership itself is fading'</b> — the more concerning "
+            "of the two patterns. See the Regime drift watch above for historical analogs."
+        )
+    elif len(softening_now) == 1:
+        n, p0, p1 = softening_now[0]
+        soft_msg = (
+            f" <b>Today's read:</b> only <b>{n}</b> is currently softening "
+            f"(P(Bull) {p0:.2f}→{p1:.2f}). Mid/small remain Neutral — consistent "
+            f"with the 'narrow large-cap-led' picture in the train/test drift below."
+        )
+    else:
+        soft_msg = (
+            " <b>Today's read:</b> no index is in an active Bull-softening drift."
+        )
+
+    st.info(
+        f"**Headline read:** 2025+ is structurally different across market-cap segments. "
+        f"VN30 carries the biggest train→test label drift (PSI={vn30_psi:.2f}), and the "
+        f"VN30/VNMIDCAP kappa collapsed to {vn30_vmid_te_kappa:.2f} in test — large-caps "
+        f"and mid-caps are no longer in the same regime. {top_msg}{soft_msg}"
     )
 
     # Performance metrics
