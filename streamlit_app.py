@@ -699,19 +699,29 @@ def summary_card(col, name, df, stats):
             )
         n_train = fwd.get(('Train (≤2024)','T+3'), {}).get('n', 0)
         n_test  = fwd.get(('Test (2025+)','T+3'), {}).get('n', 0)
+        # Footer text was "n_train=X · n_test=Y bars classified as {label}" — the
+        # ", classified as Neutral" suffix wrapped to 2 lines for Neutral cards,
+        # leaving Bull cards shorter than Neutral cards and staggering the row.
+        # min-height + shorter footer (label is already in the card title) keeps
+        # all 4 cards equal height across the row.
         st.markdown(
             f"<div style='margin-top:10px; padding:12px 14px; background:#fafbfc; "
-            f"border:1px solid #e8eaee; border-radius:8px;'>"
+            f"border:1px solid #e8eaee; border-radius:8px; min-height:230px; "
+            f"display:flex; flex-direction:column;'>"
             f"<div style='font-size:11px; font-weight:700; color:#666; letter-spacing:1px;'>"
             f"FORWARD STATS · GIVEN {label.upper()}</div>"
             f"<table style='width:100%; border-collapse:collapse; margin-top:6px; "
-            f"font-size:11px; font-variant-numeric:tabular-nums;'>"
+            f"font-size:11px; font-variant-numeric:tabular-nums; table-layout:fixed;'>"
+            f"<colgroup>"
+            f"<col style='width:22%;'><col style='width:18%;'><col style='width:22%;'>"
+            f"<col style='width:19%;'><col style='width:19%;'>"
+            f"</colgroup>"
             f"<thead><tr style='color:#888; font-weight:600;'>"
             f"<th style='text-align:left; padding:2px 4px;'></th>"
-            f"<th style='text-align:center; padding:2px 4px;'>Win</th>"
-            f"<th style='text-align:center; padding:2px 4px;'>Median</th>"
-            f"<th style='text-align:center; padding:2px 4px;'>P75 up</th>"
-            f"<th style='text-align:center; padding:2px 4px;'>P25 dn</th></tr></thead>"
+            f"<th style='text-align:center; padding:2px 2px;'>Win</th>"
+            f"<th style='text-align:center; padding:2px 2px;'>Median</th>"
+            f"<th style='text-align:center; padding:2px 2px;'>P75 up</th>"
+            f"<th style='text-align:center; padding:2px 2px;'>P25 dn</th></tr></thead>"
             f"<tbody>"
             f"<tr><td style='color:#444; font-weight:600; padding:3px 4px;'>Train T+3</td>"
             + cell('Train (≤2024)','T+3') + "</tr>"
@@ -722,8 +732,8 @@ def summary_card(col, name, df, stats):
             f"<tr><td style='color:#444; font-weight:600; padding:3px 4px;'>Test T+5</td>"
             + cell('Test (2025+)','T+5') + "</tr>"
             f"</tbody></table>"
-            f"<div style='font-size:10px; color:#999; margin-top:4px;'>"
-            f"n_train={n_train} · n_test={n_test} bars classified as {label}</div>"
+            f"<div style='font-size:10px; color:#999; margin-top:auto; padding-top:6px;'>"
+            f"Train n={n_train} · Test n={n_test}</div>"
             f"</div>",
             unsafe_allow_html=True,
         )
