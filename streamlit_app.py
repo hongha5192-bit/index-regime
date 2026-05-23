@@ -663,8 +663,12 @@ def summary_card(col, name, df, stats):
         )
 
         # Q3 — Duration
+        # min-height keeps all 4 duration cards equal height across the row so
+        # the forward-stats tables below them line up (Neutral subtitle is one
+        # word longer than Bull and would otherwise wrap to 2 lines).
         st.markdown(
-            f"<div style='margin-top:14px; padding:12px 14px; background:#f7f8fa; border-radius:8px;'>"
+            f"<div style='margin-top:14px; padding:12px 14px; background:#f7f8fa; "
+            f"border-radius:8px; min-height:148px; display:flex; flex-direction:column;'>"
             f"<div style='font-size:11px; font-weight:700; color:#666; letter-spacing:1px;'>DURATION IN {run_label.upper() if run_label else 'REGIME'}</div>"
             f"<div style='font-size:26px; font-weight:800; color:#222; margin-top:4px; font-variant-numeric:tabular-nums;'>"
             f"{run_len} <span style='font-size:14px; font-weight:500; color:#888;'>bars</span></div>"
@@ -672,8 +676,8 @@ def summary_card(col, name, df, stats):
             f"since <b>{pd.Timestamp(run_start).date()}</b> · "
             f"train median {train_med} · train P75 {train_p75} · test median {test_med}"
             f"</div>"
-            f"<div style='font-size:11px; color:{'#e67e22' if pct_rank>=75 else '#888'}; margin-top:3px; font-weight:600;'>"
-            f"≤ this length in {pct_rank:.0f}% of historical {run_label} runs"
+            f"<div style='font-size:11px; color:{'#e67e22' if pct_rank>=75 else '#888'}; margin-top:auto; padding-top:6px; font-weight:600;'>"
+            f"P{pct_rank:.0f} vs historical {run_label} runs"
             f"</div>"
             f"</div>",
             unsafe_allow_html=True,
@@ -1074,6 +1078,9 @@ with tab_dash:
             with st.expander(f"Show {len(forward)} historical analog episodes for {n}", expanded=False):
                 disp = forward.copy()
                 disp = disp.sort_values('date', ascending=False).reset_index(drop=True)
+                # Format episode date as ISO string — Streamlit's TextColumn
+                # otherwise falls back to epoch-ms for Python date objects.
+                disp['date'] = pd.to_datetime(disp['date']).dt.strftime('%Y-%m-%d')
                 st.dataframe(
                     disp[['date', 'close', 'p_bull', 'ret_5d_pct', 'ret_10d_pct', 'ret_20d_pct', 'ret_40d_pct', 'label_20d']],
                     hide_index=True, use_container_width=True,
