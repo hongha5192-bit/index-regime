@@ -456,6 +456,7 @@ def _data_mtime_key():
         os.path.join(ROOT, 'VNSMALLCAP_OHLCV_with_features_v4_shared.csv'),
         os.path.join(ROOT, 'VN30_OHLCV_with_features_v4.csv'),
         os.path.join(ROOT, 'feature_importance_extended_v7.csv'),
+        os.path.join(ROOT, 'latest_transition_risk.csv'),
     ]
     return tuple(int(os.path.getmtime(p)) for p in paths if os.path.exists(p))
 
@@ -483,6 +484,31 @@ def load_feature_csvs(_mtime_key):
     }
 
 @st.cache_data
+def load_transition_risk(_mtime_key):
+    path = os.path.join(ROOT, 'latest_transition_risk.csv')
+    if not os.path.exists(path):
+        return None
+    df = pd.read_csv(path, parse_dates=['Date'])
+    return df
+
+
+def current_regime_age(df):
+    """Days since the latest label changed (inclusive). 1 = label flipped today."""
+    if 'label' not in df.columns or len(df) == 0:
+        return None
+    d = df.sort_values('Date').reset_index(drop=True)
+    last_label = d['label'].iloc[-1]
+    # walk backwards until label changes
+    age = 0
+    for i in range(len(d) - 1, -1, -1):
+        if d['label'].iloc[i] == last_label:
+            age += 1
+        else:
+            break
+    return int(age)
+
+
+@st.cache_data
 def load_importance(_mtime_key):
     ext = os.path.join(ROOT, 'feature_importance_extended_v7.csv')
     return pd.read_csv(ext) if os.path.exists(ext) else None
@@ -492,6 +518,7 @@ indices = load_all(_mtime)
 vnindex, midcap, smallcap, vn30 = indices['VNINDEX'], indices['VNMIDCAP'], indices['VNSMALLCAP'], indices['VN30']
 feat_csvs = load_feature_csvs(_mtime)
 imp = load_importance(_mtime)
+trans_risk = load_transition_risk(_mtime)
 
 # ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -842,11 +869,33 @@ def regime_card(col, name, df, card_key):
     chg_class = "card-close-chg-pos" if chg >= 0 else "card-close-chg-neg"
     sign = "+" if chg >= 0 else ""
 
+    # Regime age + maturity flavour (cf. CJM transition research Extra B:
+    # mature regimes behave differently from fresh entries).
+    age = current_regime_age(df)
+    if age is None:
+        age_html = ""
+    else:
+        if age <= 5:
+            chip_bg, chip_fg, flavour = "#e0f2fe", "#075985", "fresh"
+        elif age <= 20:
+            chip_bg, chip_fg, flavour = "#f3f4f6", "#374151", "mid"
+        else:
+            chip_bg, chip_fg, flavour = "#fff8e1", "#b45309", "mature"
+        age_html = (
+            f"<span style='display:inline-block; padding:1px 8px; margin-left:6px; "
+            f"background:{chip_bg}; color:{chip_fg}; "
+            f"font-size:10px; font-weight:700; border-radius:8px; letter-spacing:0.4px;' "
+            f"title='Days since the current label last flipped — '"
+            f"'fresh ≤5, mid 6-20, mature >20'>"
+            f"AGE {age}d · {flavour.upper()}</span>"
+        )
+
     with col:
         st.markdown(
             f"<div class='regime-card' style='background:{bg_color}; border-left:4px solid {color};'>"
             f"<div class='card-index-label'>{name}</div>"
             f"<span class='regime-badge' style='background:{color};'>{last['label'].upper()}</span>"
+            f"{age_html}"
             f"<div class='card-meta-row'>"
             f"<span class='card-close-val'>{last['Close']:,.1f}"
             f"<span class='{chg_class}'>{sign}{chg:.1f} ({sign}{chg_pct:.2f}%)</span></span>"
@@ -1040,6 +1089,85 @@ with tab_dash:
                         'label_20d':    st.column_config.TextColumn('Regime @ +20d'),
                     },
                 )
+
+    # ── Latest transition risk (Bear_start / Bull_start models) ────────────
+    if trans_risk is not None and len(trans_risk):
+        st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+        st.subheader("Latest transition risk")
+        latest_dt = trans_risk['Date'].max()
+        st.caption(
+            f"Pooled cross-index logistic models trained per event type "
+            f"(see `CJM_transition_research`). For each (index × horizon), "
+            f"score = P(event start in next H trading days | not already in that regime). "
+            f"Higher = stronger near-term warning. Snapshot **{latest_dt.date()}**. "
+            f"<b>Research scores, not calibrated trading probabilities.</b>",
+            unsafe_allow_html=True,
+        )
+
+        latest_risk = trans_risk[trans_risk['Date'].eq(latest_dt)].copy()
+        # Build a wide layout: rows = (index, current_label), cols = bear 5/10/20 + bull 5/10/20.
+        risk_wide_rows = []
+        for index in ['VNINDEX', 'VN30', 'VNMIDCAP', 'VNSMALLCAP']:
+            row = {'Index': index}
+            sub = latest_risk[latest_risk['index'].eq(index)]
+            if not len(sub):
+                continue
+            cur = sub.iloc[0]['current_label']
+            row['Current'] = cur
+            for event in ['bear_start', 'bull_start']:
+                for h in [5, 10, 20]:
+                    cell = sub[(sub['event'] == event) & (sub['horizon'] == h)]
+                    if not len(cell):
+                        row[f'{event}_{h}d'] = None
+                        continue
+                    r = cell.iloc[0]
+                    if r['eligible_now'] == 0:
+                        row[f'{event}_{h}d'] = None  # already in that regime
+                    else:
+                        row[f'{event}_{h}d'] = float(r['pred_proba_next_event'])
+            risk_wide_rows.append(row)
+        risk_df = pd.DataFrame(risk_wide_rows)
+
+        # Display table with column groupings via Streamlit column_config.
+        st.dataframe(
+            risk_df.rename(columns={
+                'bear_start_5d':  'Bear 5d',  'bear_start_10d': 'Bear 10d', 'bear_start_20d': 'Bear 20d',
+                'bull_start_5d':  'Bull 5d',  'bull_start_10d': 'Bull 10d', 'bull_start_20d': 'Bull 20d',
+            }),
+            hide_index=True, use_container_width=True, key="trans_risk_table",
+            column_config={
+                'Index':    st.column_config.TextColumn(),
+                'Current':  st.column_config.TextColumn(help='Today\'s CJM label'),
+                'Bear 5d':  st.column_config.ProgressColumn(format='%.2f', min_value=0.0, max_value=1.0,
+                              help='P(Bear start in next 5 TD | currently not Bear). "—" means already Bear.'),
+                'Bear 10d': st.column_config.ProgressColumn(format='%.2f', min_value=0.0, max_value=1.0),
+                'Bear 20d': st.column_config.ProgressColumn(format='%.2f', min_value=0.0, max_value=1.0),
+                'Bull 5d':  st.column_config.ProgressColumn(format='%.2f', min_value=0.0, max_value=1.0,
+                              help='P(Bull start in next 5 TD | currently not Bull). "—" means already Bull.'),
+                'Bull 10d': st.column_config.ProgressColumn(format='%.2f', min_value=0.0, max_value=1.0),
+                'Bull 20d': st.column_config.ProgressColumn(format='%.2f', min_value=0.0, max_value=1.0),
+            },
+        )
+
+        # Highlight any flagged rows (pred_flag == 1)
+        flagged = latest_risk[latest_risk['pred_flag'].eq(1)].copy()
+        if len(flagged):
+            chips = []
+            for _, r in flagged.iterrows():
+                evt = r['event'].replace('_', ' ').upper()
+                pill_bg = '#e74c3c' if r['event'] == 'bear_start' else '#2ecc71'
+                chips.append(
+                    f"<span style='display:inline-block; margin:2px 6px 2px 0; padding:4px 10px; "
+                    f"background:{pill_bg}; color:#fff; font-size:12px; font-weight:600; border-radius:8px;'>"
+                    f"{r['index']} {evt} {int(r['horizon'])}d · "
+                    f"{r['pred_proba_next_event']*100:.0f}%</span>"
+                )
+            st.markdown(
+                "<div style='margin-top:6px;'><b style='font-size:12px; color:#374151;'>"
+                "Model-flagged transitions (score above tuned threshold):</b><br>"
+                + "".join(chips) + "</div>",
+                unsafe_allow_html=True,
+            )
 
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
     st.subheader("Regime timelines")
