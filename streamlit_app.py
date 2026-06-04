@@ -141,6 +141,14 @@ def _bull_col(df):
     return None
 
 
+def _bear_col(df):
+    """Return the canonical P(Bear) column name in the loaded df, or None."""
+    for c in ('p_Bear', 'v7_Bear'):
+        if c in df.columns:
+            return c
+    return None
+
+
 def detect_softening_now(df, drop_threshold=0.20, sat_threshold=0.95, window=5):
     """Is P(Bull) softening *right now*? Returns dict with current state or None.
 
@@ -158,6 +166,29 @@ def detect_softening_now(df, drop_threshold=0.20, sat_threshold=0.95, window=5):
         'active': bool(is_softening),
         'p_bull_now': cur,
         'p_bull_prev': prev,
+        'delta': delta,
+        'window': window,
+    }
+
+
+def detect_bear_emergence_now(df, dormant_threshold=0.05, trigger_threshold=0.15, window=5):
+    """Is P(Bear) emerging *right now* from a dormant base? Returns dict or None.
+
+    Triggers when P(Bear) was <=dormant_threshold `window` days ago AND has
+    risen to >=trigger_threshold today. Mirrors detect_softening_now but for
+    Bear emergence from saturated Neutral (or saturated Bull).
+    """
+    col = _bear_col(df)
+    if col is None or len(df) <= window:
+        return None
+    df = df.sort_values('Date').reset_index(drop=True)
+    cur, prev = float(df[col].iloc[-1]), float(df[col].iloc[-1 - window])
+    delta = cur - prev
+    is_emerging = (prev <= dormant_threshold + _FP_EPS) and (cur >= trigger_threshold - _FP_EPS)
+    return {
+        'active': bool(is_emerging),
+        'p_bear_now': cur,
+        'p_bear_prev': prev,
         'delta': delta,
         'window': window,
     }
@@ -192,6 +223,37 @@ def historical_softening_episodes(df, drop_threshold=0.20, sat_threshold=0.95, w
     events = cand.groupby('event_id').first().reset_index(drop=True)
     out = events[['Date', 'Close', bull_col, neut_col, bear_col, label_col]].copy()
     # Normalize names so callers don't have to branch.
+    return out.rename(columns={bull_col: 'p_Bull', neut_col: 'p_Neutral',
+                               bear_col: 'p_Bear', label_col: 'label'})
+
+
+def historical_bear_emergence_episodes(df, dormant_threshold=0.05, trigger_threshold=0.15,
+                                        window=5, dedup_days=10):
+    """Find historical 5-day Bear-emergence episodes.
+
+    Triggers when P(Bear) was <=dormant_threshold `window` days ago AND has
+    risen to >=trigger_threshold today. Mirrors historical_softening_episodes.
+    """
+    bear_col = _bear_col(df)
+    bull_col = _bull_col(df)
+    if bear_col is None or bull_col is None or len(df) < window + 1:
+        return pd.DataFrame()
+    if bull_col == 'p_Bull':
+        neut_col, label_col = 'p_Neutral', 'label'
+    else:
+        neut_col, label_col = 'v7_Neut', 'v7_label'
+
+    d = df.sort_values('Date').reset_index(drop=True).copy()
+    d['bear_w_ago'] = d[bear_col].shift(window)
+    d['bear_chg'] = d[bear_col] - d['bear_w_ago']
+    cand = d[(d['bear_w_ago'] <= dormant_threshold + _FP_EPS) &
+             (d[bear_col] >= trigger_threshold - _FP_EPS)].copy()
+    if len(cand) == 0:
+        return cand
+    cand['gap'] = cand['Date'].diff().dt.days.fillna(999)
+    cand['event_id'] = (cand['gap'] > dedup_days).cumsum()
+    events = cand.groupby('event_id').first().reset_index(drop=True)
+    out = events[['Date', 'Close', bull_col, neut_col, bear_col, label_col]].copy()
     return out.rename(columns={bull_col: 'p_Bull', neut_col: 'p_Neutral',
                                bear_col: 'p_Bear', label_col: 'label'})
 
@@ -1095,6 +1157,138 @@ with tab_dash:
                     disp[['date', 'close', 'p_bull', 'ret_5d_pct', 'ret_10d_pct', 'ret_20d_pct', 'ret_40d_pct', 'label_20d']],
                     hide_index=True, use_container_width=True,
                     key=f"drift_eps_{n}",
+                    column_config={
+                        'date':         st.column_config.TextColumn('Episode date'),
+                        'close':        st.column_config.NumberColumn('Close', format='%.2f'),
+                        'p_bull':       st.column_config.NumberColumn('P(Bull) @ event', format='%.2f'),
+                        'ret_5d_pct':   st.column_config.NumberColumn('+5d', format='%+.2f%%'),
+                        'ret_10d_pct':  st.column_config.NumberColumn('+10d', format='%+.2f%%'),
+                        'ret_20d_pct':  st.column_config.NumberColumn('+20d', format='%+.2f%%'),
+                        'ret_40d_pct':  st.column_config.NumberColumn('+40d', format='%+.2f%%'),
+                        'label_20d':    st.column_config.TextColumn('Regime @ +20d'),
+                    },
+                )
+
+    # ── Bear emergence watch (mirror of Bull-softening for Neutral→Bear leak) ─
+    st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+    st.subheader("Bear emergence watch")
+    st.caption(
+        "Detects when P(Bear) is emerging from a dormant base (≤0.05 five days ago) "
+        "to a material reading (≥0.15 today). Conditions on every historical episode "
+        "matching that signature. Shows the empirical forward-return distribution from those analogs."
+    )
+
+    bear_rows = []
+    bear_active_for = []
+    for n, df_idx in [('VNINDEX', vnindex), ('VN30', vn30), ('VNMIDCAP', midcap), ('VNSMALLCAP', smallcap)]:
+        d = detect_bear_emergence_now(df_idx)
+        if d is None:
+            continue
+        bear_rows.append({'Index': n, **d})
+        if d['active']:
+            bear_active_for.append((n, df_idx, d))
+
+    if bear_rows:
+        strip_cols = st.columns(len(bear_rows))
+        for cx, r in zip(strip_cols, bear_rows):
+            pill_bg = '#e74c3c' if r['active'] else '#7f8c8d'
+            pill_txt = 'EMERGING' if r['active'] else 'DORMANT'
+            arrow = '↑' if r['delta'] > 0 else ('↓' if r['delta'] < 0 else '→')
+            cx.markdown(
+                f"<div style='padding:10px 12px; background:#fafbfc; border:1px solid #e1e4e8; "
+                f"border-radius:8px; font-size:13px; line-height:1.55;'>"
+                f"<b>{r['Index']}</b>  "
+                f"<span style='display:inline-block; padding:1px 8px; background:{pill_bg}; color:#fff; "
+                f"font-size:10px; font-weight:700; border-radius:8px; letter-spacing:0.5px; margin-left:6px;'>"
+                f"{pill_txt}</span><br>"
+                f"P(Bear) <code>{r['p_bear_prev']:.2f}</code> → <code>{r['p_bear_now']:.2f}</code> "
+                f"<span style='color:#888;'>(Δ {arrow} {abs(r['delta']):.2f} over 5d)</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+    if not bear_active_for:
+        st.success("No index is in a Bear-emergence drift right now. (Trigger: P(Bear) was ≤0.05 "
+                   "five trading days ago and has risen to ≥0.15 since.)")
+    else:
+        for n, df_idx, drift in bear_active_for:
+            st.markdown(
+                f"<div style='margin-top:10px; padding:12px 16px; background:#fff5f5; "
+                f"border-left:5px solid #e74c3c; border-radius:8px; font-size:13px; line-height:1.7;'>"
+                f"<b>{n} is in a Bear-emergence drift right now.</b> "
+                f"P(Bear) rose from <code>{drift['p_bear_prev']:.2f}</code> to "
+                f"<code>{drift['p_bear_now']:.2f}</code> over the last 5 trading days. "
+                f"Historical analogs and base-rate forward returns are below — these are "
+                f"empirical priors, not predictions."
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            episodes = historical_bear_emergence_episodes(df_idx)
+            if len(episodes):
+                cutoff = df_idx['Date'].iloc[-1] - pd.Timedelta(days=80)
+                episodes = episodes[episodes['Date'] <= cutoff].reset_index(drop=True)
+            forward, stats = forward_path_stats(df_idx, episodes)
+
+            if len(episodes) < 3:
+                st.info(f"Only {len(episodes)} historical analog episodes for {n} — "
+                        "sample too thin to summarise.")
+                continue
+
+            c_base, c_outcome = st.columns([3, 2])
+            with c_base:
+                st.markdown(f"**Forward-return base rates ({n}) — {len(forward)} analog episodes**")
+                rows_disp = []
+                for h_label in ['5d', '10d', '20d', '40d']:
+                    s = stats.get(h_label, {})
+                    if not s:
+                        continue
+                    rows_disp.append({
+                        'Horizon': '+' + h_label,
+                        'Median': s['median'],
+                        'Mean':   s['mean'],
+                        'P25':    s['p25'],
+                        'P75':    s['p75'],
+                        'Positive': s['pos_rate'],
+                    })
+                base_df = pd.DataFrame(rows_disp)
+                st.dataframe(
+                    base_df, hide_index=True, use_container_width=True, key=f"bear_base_{n}",
+                    column_config={
+                        'Median':   st.column_config.NumberColumn(format='%+.2f%%'),
+                        'Mean':     st.column_config.NumberColumn(format='%+.2f%%'),
+                        'P25':      st.column_config.NumberColumn(format='%+.2f%%'),
+                        'P75':      st.column_config.NumberColumn(format='%+.2f%%'),
+                        'Positive': st.column_config.NumberColumn('Pos rate', format='%.0f%%'),
+                    },
+                )
+            with c_outcome:
+                lbl = stats.get('label_20d', {})
+                total = sum(lbl.values()) if lbl else 0
+                st.markdown(f"**Regime at +20d (n={total})**")
+                if total > 0:
+                    for k, c in [('Bull', '#2ecc71'), ('Neutral', '#3498db'), ('Bear', '#e74c3c')]:
+                        v = lbl.get(k, 0)
+                        pct = (v / total * 100.0) if total else 0
+                        st.markdown(
+                            f"<div style='padding:6px 10px; background:#fafbfc; border:1px solid #e1e4e8; "
+                            f"border-radius:6px; margin-bottom:4px; font-size:13px;'>"
+                            f"<span style='display:inline-block; width:60px;'>"
+                            f"<span style='display:inline-block; padding:1px 8px; background:{c}; color:#fff; "
+                            f"font-size:10px; font-weight:700; border-radius:8px;'>{k}</span></span>"
+                            f"<span style='color:#444; font-weight:600;'>{v}</span> / {total}  "
+                            f"<span style='color:#888;'>({pct:.0f}%)</span>"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
+
+            with st.expander(f"Show {len(forward)} historical analog episodes for {n}", expanded=False):
+                disp = forward.copy()
+                disp = disp.sort_values('date', ascending=False).reset_index(drop=True)
+                disp['date'] = pd.to_datetime(disp['date']).dt.strftime('%Y-%m-%d')
+                st.dataframe(
+                    disp[['date', 'close', 'p_bull', 'ret_5d_pct', 'ret_10d_pct', 'ret_20d_pct', 'ret_40d_pct', 'label_20d']],
+                    hide_index=True, use_container_width=True,
+                    key=f"bear_eps_{n}",
                     column_config={
                         'date':         st.column_config.TextColumn('Episode date'),
                         'close':        st.column_config.NumberColumn('Close', format='%.2f'),
